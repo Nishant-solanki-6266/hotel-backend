@@ -1,0 +1,246 @@
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Hotel {
+  id             String   @id @default("hotel-mercier")
+  name           String
+  legalName      String
+  stars          Int      @default(4)
+  roomsCount     Int      @default(48)
+  address        String
+  postcode       String
+  city           String
+  country        String
+  timezone       String   @default("Europe/Brussels")
+  currency       String   @default("€")
+  phone          String
+  email          String
+  website        String
+  bookingEngine  String
+  whatsappNumber String
+  checkIn        String   @default("15:00")
+  checkOut       String   @default("11:00")
+  vatNumber      String
+  description    String   @db.Text
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+enum Role {
+  manager
+  front_office @map("front-office")
+  housekeeping
+  maintenance
+}
+
+model User {
+  id           String   @id @default(uuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         String   // "manager", "front-office", "housekeeping", "maintenance"
+  title        String
+  phone        String
+  initials     String
+  lastActive   String   @default("now")
+  whatsapp     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Room {
+  number       String   @id
+  floor        Int
+  status       String   @default("Clean") // "Dirty", "Cleaning", "Clean", "Inspected", "DND", "Guest Inside", "Maintenance", "Blocked"
+  cleaningType String   @default("Departure") // "Departure", "Stayover", "Stayover + Linen", "VIP Arrival", "Deep Clean", "Turndown"
+  guestStatus  String   @default("Vacant")
+  arrivalTime  String?
+  priority     String   @default("Normal") // "Urgent", "High", "Normal", "Low"
+  cleaner      String?
+  vip          Boolean  @default(false)
+  note         String?  @db.Text
+  updatedAt    String
+}
+
+model Guest {
+  id             String        @id
+  name           String
+  room           String?
+  country        String
+  language       String
+  vip            Boolean       @default(false)
+  previousStays  Int           @default(0)
+  tags           String        @default("[]") // JSON string array
+  reservations   Reservation[]
+  conversations  Conversation[]
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+}
+
+model Reservation {
+  number    String   @id
+  guestId   String
+  guest     Guest    @relation(fields: [guestId], references: [id], onDelete: Cascade)
+  arrival   String
+  departure String
+  nights    Int
+  adults    Int
+  children  Int      @default(0)
+  roomType  String
+  status    String   @default("Confirmed") // "Confirmed", "In House", "Checked Out", "Enquiry"
+  rate      String
+  createdAt DateTime @default(now())
+}
+
+model Conversation {
+  id              String    @id
+  guestId         String
+  guest           Guest     @relation(fields: [guestId], references: [id], onDelete: Cascade)
+  stage           String    // "pre-arrival", "in-house", "post-stay"
+  primaryChannel  String    // "whatsapp", "gmail", "outlook", "email"
+  aiStatus        String    // "ai-handling", "human-takeover", "escalated", "resolved"
+  sentiment       String    // "positive", "neutral", "frustrated", "urgent"
+  subject         String
+  summary         String    @db.Text
+  suggestedReply  String    @db.Text
+  knowledgeUsed   String    @default("[]") // JSON string array
+  upsellIdeas     String    @default("[]") // JSON string array
+  taskIds         String    @default("[]") // JSON string array
+  escalation      String?   @db.Text       // JSON string
+  unread          Int       @default(0)
+  lastAt          String
+  aiHandledCount  Int       @default(0)
+  messages        Message[]
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+model Message {
+  id             String       @id
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  author         String       // "guest", "ai", "staff", "system"
+  channel        String       // "whatsapp", "gmail", "outlook", "email", "internal"
+  body           String       @db.Text
+  at             String
+  staffName      String?
+  knowledge      String       @default("[]") // JSON string array
+  buttons        String       @default("[]") // JSON string array
+  confidence     Float?
+  createdAt      DateTime     @default(now())
+}
+
+model Task {
+  id             String      @id
+  title          String
+  detail         String?     @db.Text
+  room           String?
+  guest          String?
+  department     String      // "Front Office", "Housekeeping", "Maintenance", "VIP", "Billing", "Follow-up", "Guest Request"
+  priority       String      @default("Normal") // "Urgent", "High", "Normal", "Low"
+  createdAt      String
+  due            String?
+  assignee       String?
+  status         String      @default("Pending") // "New", "Assigned", "In Progress", "Waiting", "Completed", "Escalated"
+  source         String      @default("AI Detection") // "Guest WhatsApp", "Guest Email", "AI Detection", "Manager", "Front Office", "Housekeeping", "PMS event"
+  conversationId String?
+  trail          TaskTrail[]
+}
+
+model TaskTrail {
+  id     Int     @id @default(autoincrement())
+  taskId String
+  task   Task    @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  at     String
+  text   String
+  via    String? // "whatsapp", "dashboard", "ai"
+}
+
+model Issue {
+  id           String        @id
+  room         String
+  title        String
+  detail       String?       @db.Text
+  priority     String        @default("Normal") // "Urgent", "High", "Normal", "Low"
+  reportedBy   String
+  via          String        @default("Dashboard")
+  createdAt    String
+  assignee     String?
+  status       String        @default("Reported") // "Reported", "Open", "Accepted", "In Progress", "Waiting Parts", "Completed", "Escalated"
+  outOfService Boolean       @default(false)
+  updates      IssueUpdate[]
+}
+
+model IssueUpdate {
+  id      Int     @id @default(autoincrement())
+  issueId String
+  issue   Issue   @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  at      String
+  text    String
+  via     String? // "whatsapp", "dashboard"
+}
+
+model Upsell {
+  id      String @id
+  guest   String
+  room    String?
+  offer   String
+  value   Float
+  channel String // "whatsapp", "gmail", "outlook", "email"
+  status  String // "Accepted", "Sent", "Declined", "Expired"
+  date    String
+}
+
+model KnowledgeDoc {
+  id        String   @id
+  name      String
+  category  String   // "Hotel Policies", "Hotel Information", "Local Recommendations", "Upsells"
+  format    String   // "PDF", "DOCX", "TXT", "CSV"
+  size      String
+  updated   String
+  status    String   // "Indexed", "Processing", "Needs Review"
+  aiReady   Boolean  @default(true)
+  usedToday Int      @default(0)
+  createdAt DateTime @default(now())
+}
+
+model AiRule {
+  id    Int    @id @default(autoincrement())
+  topic String
+  mode  String // "Autonomous", "Human Approval", "Always Escalate"
+  note  String @db.Text
+}
+
+model ActivityItem {
+  id   String @id
+  at   String
+  kind String // "ai-reply", "task", "escalation", "upsell", "room", "maintenance", "guest"
+  text String
+  meta String?
+}
+
+model WaThread {
+  id         String      @id
+  contact    String
+  role       String
+  phone      String
+  department String      // "Housekeeping", "Maintenance", "Front Office"
+  messages   WaMessage[]
+}
+
+model WaMessage {
+  id       String    @id
+  threadId String
+  thread   WaThread  @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  from     String    // "hotelogx", "staff"
+  body     String    @db.Text
+  at       String
+  buttons  String    @default("[]") // JSON string
+  chosen   String?
+}

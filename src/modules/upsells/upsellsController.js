@@ -1,0 +1,39 @@
+import { prisma } from '../../config/database.js';
+import { errorResponse, successResponse } from '../../utils/response.js';
+
+export const getUpsells = async (req, res, next) => {
+  try {
+    const { status } = req.query;
+    const where = {};
+    if (status) where.status = status;
+
+    const upsells = await prisma.upsell.findMany({
+      where,
+      orderBy: { date: 'desc' },
+    });
+    return successResponse(res, upsells, 'Upsells pipeline');
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateUpsellStatus = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    const existing = await prisma.upsell.findUnique({ where: { id } });
+    if (!existing) {
+      return errorResponse(res, 'Upsell not found', 404);
+    }
+
+    const updated = await prisma.upsell.update({
+      where: { id },
+      data: { status },
+    });
+
+    return successResponse(res, updated, `Upsell updated to ${status}`);
+  } catch (error) {
+    next(error);
+  }
+};
