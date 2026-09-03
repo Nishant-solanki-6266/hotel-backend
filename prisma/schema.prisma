@@ -26,10 +26,13 @@ model Hotel {
   whatsappNumber String
   checkIn        String   @default("15:00")
   checkOut       String   @default("11:00")
-  vatNumber      String
-  description    String   @db.Text
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  vatNumber       String
+  description     String          @db.Text
+  waTopology      String          @default("separate")
+  onboardingDone  Boolean         @default(false)
+  onboardingSteps String          @default("[]")
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
 }
 
 enum Role {
@@ -57,7 +60,7 @@ model User {
 model Room {
   number       String   @id
   mewsId       String?
-  hotelId      String   @default("hotel-mercier")
+  hotelId      String?  @default("hotel-mercier")
   floor        Int
   status       String   @default("Clean") // "Dirty", "Cleaning", "Clean", "Inspected", "DND", "Guest Inside", "Maintenance", "Blocked"
   cleaningType String   @default("Departure") // "Departure", "Stayover", "Stayover + Linen", "VIP Arrival", "Deep Clean", "Turndown"
@@ -76,7 +79,7 @@ model Room {
 model Guest {
   id             String        @id
   mewsId         String?
-  hotelId        String        @default("hotel-mercier")
+  hotelId        String?       @default("hotel-mercier")
   name           String
   room           String?
   country        String
@@ -96,7 +99,7 @@ model Guest {
 model Reservation {
   number    String   @id
   mewsId    String?
-  hotelId   String   @default("hotel-mercier")
+  hotelId   String?  @default("hotel-mercier")
   guestId   String
   guest     Guest    @relation(fields: [guestId], references: [id], onDelete: Cascade)
   arrival   String
@@ -154,7 +157,7 @@ model Message {
 
 model Task {
   id             String      @id
-  hotelId        String      @default("hotel-mercier")
+  hotelId        String?     @default("hotel-mercier")
   title          String
   detail         String?     @db.Text
   room           String?
@@ -184,7 +187,7 @@ model TaskTrail {
 
 model Issue {
   id           String        @id
-  hotelId      String        @default("hotel-mercier")
+  hotelId      String?       @default("hotel-mercier")
   room         String
   title        String
   detail       String?       @db.Text
@@ -212,7 +215,7 @@ model IssueUpdate {
 
 model Upsell {
   id      String @id
-  hotelId String @default("hotel-mercier")
+  hotelId String? @default("hotel-mercier")
   guest   String
   room    String?
   offer   String
@@ -227,7 +230,7 @@ model Upsell {
 
 model KnowledgeDoc {
   id        String   @id
-  hotelId   String   @default("hotel-mercier")
+  hotelId   String?  @default("hotel-mercier")
   name      String
   category  String   // "Hotel Policies", "Hotel Information", "Local Recommendations", "Upsells"
   format    String   // "PDF", "DOCX", "TXT", "CSV"
@@ -249,8 +252,8 @@ model AiRule {
 }
 
 model ActivityItem {
-  id      String @id
-  hotelId String @default("hotel-mercier")
+  id      String  @id
+  hotelId String? @default("hotel-mercier")
   at      String
   kind    String // "ai-reply", "task", "escalation", "upsell", "room", "maintenance", "guest"
   text    String
@@ -280,8 +283,7 @@ model WaMessage {
 
 model PmsIntegration {
   id                   String    @id @default(uuid())
-  hotelId              String    @unique
-  hotel                Hotel     @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  hotelId              String    @unique @default("hotel-mercier")
   provider             String    @default("mews")
   propertyId           String
   accessTokenEncrypted String?   @db.Text

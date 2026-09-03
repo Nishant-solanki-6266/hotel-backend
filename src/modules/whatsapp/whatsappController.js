@@ -1,6 +1,93 @@
 import { prisma } from '../../config/database.js';
 import { errorResponse, successResponse } from '../../utils/response.js';
 
+/**
+ * Helper: Sanitize phone numbers to pure E.164 digits without +, -, or spaces
+ */
+export const sanitizePhoneNumber = (phone) => {
+  if (!phone) return '';
+  return String(phone).replace(/\D/g, '');
+};
+
+/**
+ * Helper: Send Outbound WhatsApp Message via Meta Cloud Graph API
+ */
+export const sendMetaWhatsAppMessage = async (toPhone, text, buttons = []) => {
+  const cleanPhone = sanitizePhoneNumber(toPhone);
+  if (!cleanPhone) {
+    console.warn('[WhatsApp] No valid recipient phone number provided for dispatch');
+    return { success: false, reason: 'Invalid phone number' };
+  }
+
+  const token = process.env.META_ACCESS_TOKEN;
+  const phoneId = process.env.META_PHONE_NUMBER_ID;
+
+  // Graceful Fallback if live credentials are not set in environment
+  if (!token || !phoneId) {
+    console.log(`[WhatsApp Simulator] Outbound message to +${cleanPhone}: "${text}"`);
+    return { success: true, simulated: true };
+  }
+
+  try {
+    let payload;
+
+    if (buttons && buttons.length > 0) {
+      // Interactive Button Message
+      payload = {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: cleanPhone,
+        type: 'interactive',
+        interactive: {
+          type: 'button',
+          body: { text: text || 'Action required' },
+          action: {
+            buttons: buttons.slice(0, 3).map((btn, idx) => ({
+              type: 'reply',
+              reply: {
+                id: `btn_${idx}_${Date.now()}`,
+                title: String(btn).slice(0, 20),
+              },
+            })),
+          },
+        },
+      };
+    } else {
+      // Standard Text Message
+      payload = {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: cleanPhone,
+        type: 'text',
+        text: { preview_url: false, body: text },
+      };
+    }
+
+    const response = await fetch(`https://graph.facebook.com/v19.0/${phoneId}/messages`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      console.warn('[WhatsApp API Warning]', data?.error?.message || response.statusText);
+      return { success: false, error: data?.error };
+    }
+
+    return { success: true, messageId: data?.messages?.[0]?.id };
+  } catch (err) {
+    console.error('[WhatsApp Network Error]', err.message);
+    return { success: false, error: err.message };
+  }
+};
+
+/**
+ * Endpoint: GET /api/whatsapp/threads
+ */
 export const getThreads = async (req, res, next) => {
   try {
     const threads = await prisma.waThread.findMany({
@@ -25,9 +112,12 @@ export const getThreads = async (req, res, next) => {
   }
 };
 
+/**
+ * Endpoint: POST /api/whatsapp/action
+ */
 export const handleAction = async (req, res, next) => {
   try {
-    const { threadId, messageId, label, staffName, room, actionType } = req.body;
+    const { threadId, messageId, label, staffName, room, actionType, phone } = req.body;
 
     const now = new Date();
     const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
@@ -46,7 +136,7 @@ export const handleAction = async (req, res, next) => {
       if (roomNum) {
         await prisma.room.update({
           where: { number: roomNum },
-          data: { status: 'Clean', cleaner: staffName, updatedAt: timeStr },
+          data: { status: 'Clean', cleaner: staffName || 'Staff', updatedAt: timeStr },
         }).catch(() => {});
 
         // Complete any matching cleaning task
@@ -67,12 +157,12 @@ export const handleAction = async (req, res, next) => {
                 },
               },
             },
-          });
+          }).catch(() => {});
         }
       }
     }
 
-    // Append outbound confirmation message in the thread
+    // Append outbound confirmation message in the database thread
     if (threadId) {
       await prisma.waMessage.create({
         data: {
@@ -85,7 +175,102 @@ export const handleAction = async (req, res, next) => {
       }).catch(() => {});
     }
 
+    // If phone number exists, dispatch live Meta WhatsApp message safely
+    if (phone) {
+      sendMetaWhatsAppMessage(phone, `Action confirmed: ${label || 'Task completed'}`).catch(() => {});
+    }
+
     return successResponse(res, { success: true, at: timeStr }, 'WhatsApp action processed');
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Endpoint: GET /api/whatsapp/webhook (Meta Webhook Verification Challenge)
+ */
+export const verifyWebhook = (req, res) => {
+  try {
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+
+    const expectedToken = process.env.META_WEBHOOK_VERIFY_TOKEN || 'hotelogx_secret_token';
+
+    if (mode === 'subscribe' && token === expectedToken) {
+      console.log('[WhatsApp Webhook] Verification successful');
+      return res.status(200).send(challenge);
+    }
+
+    console.warn('[WhatsApp Webhook] Verification token mismatch');
+    return res.sendStatus(403);
+  } catch (err) {
+    return res.status(500).send(err.message);
+  }
+};
+
+/**
+ * Endpoint: POST /api/whatsapp/webhook (Inbound Message & Event Receiver)
+ */
+export const handleWebhook = async (req, res) => {
+  // Return immediate 200 OK to Meta to avoid retry loops
+  res.sendStatus(200);
+
+  try {
+    const body = req.body;
+    if (!body || body.object !== 'whatsapp_business_account') {
+      return;
+    }
+
+    // Safe payload traversal using optional chaining to prevent undefined crashes
+    const entry = body.entry?.[0];
+    const change = entry?.changes?.[0]?.value;
+    const messages = change?.messages;
+    const contacts = change?.contacts;
+
+    // If it is a delivery receipt or status update without message body, return early
+    if (!messages || messages.length === 0) {
+      return;
+    }
+
+    const msg = messages[0];
+    const fromPhone = msg.from;
+    const senderName = contacts?.[0]?.profile?.name || 'Guest';
+    const msgText = msg.text?.body || msg.interactive?.button_reply?.title || msg.button?.text || '';
+
+    const now = new Date();
+    const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
+    console.log(`[WhatsApp Inbound] Message from ${senderName} (+${fromPhone}): "${msgText}"`);
+
+    // Log Activity Feed entry
+    await prisma.activityItem.create({
+      data: {
+        id: `act-${Date.now()}`,
+        at: timeStr,
+        kind: 'ai-reply',
+        text: `WhatsApp message from ${senderName} (+${fromPhone}): "${msgText.slice(0, 50)}"`,
+        meta: 'Meta Cloud API',
+      },
+    }).catch(() => {});
+
+  } catch (err) {
+    console.error('[WhatsApp Webhook Error]', err.message);
+  }
+};
+
+/**
+ * Endpoint: POST /api/whatsapp/send (Manual / System Outbound Message)
+ */
+export const sendTestMessage = async (req, res, next) => {
+  try {
+    const { to, message, buttons } = req.body;
+    if (!to || !message) {
+      return errorResponse(res, 'Recipient phone (to) and message text are required', 400);
+    }
+
+    const result = await sendMetaWhatsAppMessage(to, message, buttons);
+    return successResponse(res, result, 'WhatsApp message dispatched');
   } catch (error) {
     next(error);
   }
