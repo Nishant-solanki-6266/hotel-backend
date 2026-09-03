@@ -28,7 +28,6 @@ model Hotel {
   checkOut       String   @default("11:00")
   vatNumber      String
   description    String   @db.Text
-  pmsIntegration PmsIntegration?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 }

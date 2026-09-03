@@ -1,22 +1,20 @@
 import { Router } from 'express';
-import { getOnboardingStatus, updateOnboardingStatus } from './onboardingController.js';
-import { authenticate } from '../../middlewares/auth.js';
+import {
+  getOnboardingStatus,
+  getHotelProfile,
+  saveHotelProfile,
+  saveTopology,
+  saveOnboardingStep,
+  completeOnboarding,
+} from './onboardingController.js';
 
 const router = Router();
 
-const resolveHotelContext = (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    return authenticate(req, res, next);
-  }
-  if (process.env.DEMO_MODE === 'true') {
-    req.user = { id: 'u-jonas', hotelId: 'hotel-mercier', role: 'MANAGER' };
-    return next();
-  }
-  return res.status(401).json({ success: false, message: 'Authentication required. Missing Bearer token.', data: null });
-};
-
-router.get('/status', resolveHotelContext, getOnboardingStatus);
-router.patch('/status', resolveHotelContext, updateOnboardingStatus);
+router.get('/status', getOnboardingStatus);
+router.get('/profile', getHotelProfile);
+router.post('/profile', saveHotelProfile);
+router.post('/topology', saveTopology);
+router.post('/step', saveOnboardingStep);
+router.post('/complete', completeOnboarding);
 
 export default router;
