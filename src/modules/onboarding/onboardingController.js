@@ -278,10 +278,28 @@ export const saveOnboardingStep = async (req, res, next) => {
       }
     }
 
+    // Log activity if internal staff WhatsApp is connected
+    if (stepKey === 'wa-internal') {
+      try {
+        await prisma.activityItem.create({
+          data: {
+            id: `act-${Date.now()}`,
+            at: new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
+            kind: 'room',
+            text: `Internal Staff WhatsApp connected: ${data?.phone || '+32 3 227 41 09'}`,
+            meta: 'Setup Wizard',
+          },
+        });
+      } catch {
+        // Continue safely
+      }
+    }
+
     return successResponse(res, {
       stepKey,
       onboardingSteps: inMemorySteps,
       email: data?.address,
+      phone: data?.phone,
     }, `Step ${stepKey} saved successfully`);
   } catch (error) {
     next(error);
