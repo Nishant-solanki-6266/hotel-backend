@@ -3,8 +3,9 @@ import { errorResponse, successResponse } from '../../utils/response.js';
 
 export const getIssues = async (req, res, next) => {
   try {
+    const hotelId = req.user?.hotelId || 'hotel-mercier';
     const { status, room } = req.query;
-    const where = {};
+    const where = { hotelId };
     if (status) where.status = status;
     if (room) where.room = room;
 
@@ -25,6 +26,7 @@ export const getIssues = async (req, res, next) => {
 
 export const createIssue = async (req, res, next) => {
   try {
+    const hotelId = req.user?.hotelId || 'hotel-mercier';
     const {
       room,
       title,
@@ -47,6 +49,7 @@ export const createIssue = async (req, res, next) => {
     const issue = await prisma.issue.create({
       data: {
         id,
+        hotelId,
         room,
         title,
         detail,
@@ -81,6 +84,7 @@ export const createIssue = async (req, res, next) => {
     await prisma.activityItem.create({
       data: {
         id: `act-${Date.now()}`,
+        hotelId,
         at: timeStr,
         kind: 'maintenance',
         text: `New maintenance issue for Room ${room}: ${title}`,
@@ -96,11 +100,12 @@ export const createIssue = async (req, res, next) => {
 
 export const updateIssueStatus = async (req, res, next) => {
   try {
+    const hotelId = req.user?.hotelId || 'hotel-mercier';
     const { id } = req.params;
     const { status, note, via = 'dashboard' } = req.body;
 
-    const existing = await prisma.issue.findUnique({
-      where: { id },
+    const existing = await prisma.issue.findFirst({
+      where: { id, hotelId },
       include: { updates: true },
     });
 
@@ -126,8 +131,6 @@ export const updateIssueStatus = async (req, res, next) => {
       include: { updates: true },
     });
 
-    // Cross-department automation:
-    // If completed and room was in maintenance / out of service, set room back to Dirty for housekeeping recheck
     if (status === 'Completed') {
       await prisma.room.update({
         where: { number: existing.room },
@@ -138,10 +141,10 @@ export const updateIssueStatus = async (req, res, next) => {
         },
       });
 
-      // Also create a re-inspection task for Housekeeping
       await prisma.task.create({
         data: {
           id: `t-${Date.now()}`,
+          hotelId,
           title: `Re-inspect Room ${existing.room} after ${existing.title} repair`,
           room: existing.room,
           department: 'Housekeeping',
@@ -164,6 +167,7 @@ export const updateIssueStatus = async (req, res, next) => {
     await prisma.activityItem.create({
       data: {
         id: `act-${Date.now()}`,
+        hotelId,
         at: timeStr,
         kind: 'maintenance',
         text: `Issue ${id} (Room ${existing.room}) marked ${status}`,

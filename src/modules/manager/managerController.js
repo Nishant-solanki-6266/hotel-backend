@@ -3,6 +3,8 @@ import { successResponse } from '../../utils/response.js';
 
 export const getBriefing = async (req, res, next) => {
   try {
+    const hotelId = req.user?.hotelId || 'hotel-mercier';
+
     const [
       rooms,
       openTasks,
@@ -11,12 +13,12 @@ export const getBriefing = async (req, res, next) => {
       upsells,
       activities,
     ] = await Promise.all([
-      prisma.room.findMany(),
-      prisma.task.count({ where: { status: { not: 'Completed' } } }),
-      prisma.issue.count({ where: { status: { not: 'Completed' } } }),
+      prisma.room.findMany({ where: { hotelId } }),
+      prisma.task.count({ where: { hotelId, status: { not: 'Completed' } } }),
+      prisma.issue.count({ where: { hotelId, status: { not: 'Completed' } } }),
       prisma.conversation.findMany(),
-      prisma.upsell.findMany(),
-      prisma.activityItem.findMany({ take: 10, orderBy: { id: 'desc' } }),
+      prisma.upsell.findMany({ where: { hotelId } }),
+      prisma.activityItem.findMany({ where: { hotelId }, take: 10, orderBy: { id: 'desc' } }),
     ]);
 
     const totalRooms = rooms.length || 48;
@@ -65,7 +67,9 @@ export const getBriefing = async (req, res, next) => {
 
 export const getActivityFeed = async (req, res, next) => {
   try {
+    const hotelId = req.user?.hotelId || 'hotel-mercier';
     const activities = await prisma.activityItem.findMany({
+      where: { hotelId },
       take: 20,
       orderBy: { id: 'desc' },
     });

@@ -3,8 +3,10 @@ import { errorResponse, successResponse } from '../../utils/response.js';
 
 export const getTasks = async (req, res, next) => {
   try {
+    const hotelId = req.user?.hotelId || 'hotel-mercier';
     const { department, status, source } = req.query;
-    const where = {};
+    const where = { hotelId };
+
     if (department) where.department = department;
     if (status) where.status = status;
     if (source) where.source = source;
@@ -26,9 +28,10 @@ export const getTasks = async (req, res, next) => {
 
 export const getTaskById = async (req, res, next) => {
   try {
+    const hotelId = req.user?.hotelId || 'hotel-mercier';
     const { id } = req.params;
-    const task = await prisma.task.findUnique({
-      where: { id },
+    const task = await prisma.task.findFirst({
+      where: { id, hotelId },
       include: { trail: true },
     });
     if (!task) {
@@ -42,6 +45,7 @@ export const getTaskById = async (req, res, next) => {
 
 export const createTask = async (req, res, next) => {
   try {
+    const hotelId = req.user?.hotelId || 'hotel-mercier';
     const {
       title,
       detail,
@@ -66,6 +70,7 @@ export const createTask = async (req, res, next) => {
     const task = await prisma.task.create({
       data: {
         id,
+        hotelId,
         title,
         detail,
         room,
@@ -95,6 +100,7 @@ export const createTask = async (req, res, next) => {
     await prisma.activityItem.create({
       data: {
         id: `act-${Date.now()}`,
+        hotelId,
         at: timeStr,
         kind: 'task',
         text: `New task for ${department}: "${title}"`,
@@ -110,11 +116,12 @@ export const createTask = async (req, res, next) => {
 
 export const updateTaskStatus = async (req, res, next) => {
   try {
+    const hotelId = req.user?.hotelId || 'hotel-mercier';
     const { id } = req.params;
     const { status, note, via = 'dashboard' } = req.body;
 
-    const existing = await prisma.task.findUnique({
-      where: { id },
+    const existing = await prisma.task.findFirst({
+      where: { id, hotelId },
       include: { trail: true },
     });
 
@@ -144,6 +151,7 @@ export const updateTaskStatus = async (req, res, next) => {
     await prisma.activityItem.create({
       data: {
         id: `act-${Date.now()}`,
+        hotelId,
         at: timeStr,
         kind: 'task',
         text: `Task "${existing.title}" marked ${status}`,

@@ -28,6 +28,7 @@ model Hotel {
   checkOut       String   @default("11:00")
   vatNumber      String
   description    String   @db.Text
+  pmsIntegration PmsIntegration?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 }
@@ -56,6 +57,8 @@ model User {
 
 model Room {
   number       String   @id
+  mewsId       String?
+  hotelId      String   @default("hotel-mercier")
   floor        Int
   status       String   @default("Clean") // "Dirty", "Cleaning", "Clean", "Inspected", "DND", "Guest Inside", "Maintenance", "Blocked"
   cleaningType String   @default("Departure") // "Departure", "Stayover", "Stayover + Linen", "VIP Arrival", "Deep Clean", "Turndown"
@@ -66,10 +69,15 @@ model Room {
   vip          Boolean  @default(false)
   note         String?  @db.Text
   updatedAt    String
+
+  @@index([hotelId, status])
+  @@index([hotelId, mewsId])
 }
 
 model Guest {
   id             String        @id
+  mewsId         String?
+  hotelId        String        @default("hotel-mercier")
   name           String
   room           String?
   country        String
@@ -81,10 +89,15 @@ model Guest {
   conversations  Conversation[]
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
+
+  @@index([hotelId, name])
+  @@index([hotelId, mewsId])
 }
 
 model Reservation {
   number    String   @id
+  mewsId    String?
+  hotelId   String   @default("hotel-mercier")
   guestId   String
   guest     Guest    @relation(fields: [guestId], references: [id], onDelete: Cascade)
   arrival   String
@@ -96,6 +109,10 @@ model Reservation {
   status    String   @default("Confirmed") // "Confirmed", "In House", "Checked Out", "Enquiry"
   rate      String
   createdAt DateTime @default(now())
+
+  @@index([hotelId, status])
+  @@index([hotelId, arrival])
+  @@index([hotelId, mewsId])
 }
 
 model Conversation {
@@ -138,6 +155,7 @@ model Message {
 
 model Task {
   id             String      @id
+  hotelId        String      @default("hotel-mercier")
   title          String
   detail         String?     @db.Text
   room           String?
@@ -151,6 +169,9 @@ model Task {
   source         String      @default("AI Detection") // "Guest WhatsApp", "Guest Email", "AI Detection", "Manager", "Front Office", "Housekeeping", "PMS event"
   conversationId String?
   trail          TaskTrail[]
+
+  @@index([hotelId, status])
+  @@index([hotelId, createdAt])
 }
 
 model TaskTrail {
@@ -164,6 +185,7 @@ model TaskTrail {
 
 model Issue {
   id           String        @id
+  hotelId      String        @default("hotel-mercier")
   room         String
   title        String
   detail       String?       @db.Text
@@ -175,6 +197,9 @@ model Issue {
   status       String        @default("Reported") // "Reported", "Open", "Accepted", "In Progress", "Waiting Parts", "Completed", "Escalated"
   outOfService Boolean       @default(false)
   updates      IssueUpdate[]
+
+  @@index([hotelId, status])
+  @@index([hotelId, createdAt])
 }
 
 model IssueUpdate {
@@ -188,6 +213,7 @@ model IssueUpdate {
 
 model Upsell {
   id      String @id
+  hotelId String @default("hotel-mercier")
   guest   String
   room    String?
   offer   String
@@ -195,10 +221,14 @@ model Upsell {
   channel String // "whatsapp", "gmail", "outlook", "email"
   status  String // "Accepted", "Sent", "Declined", "Expired"
   date    String
+
+  @@index([hotelId, status])
+  @@index([hotelId, date])
 }
 
 model KnowledgeDoc {
   id        String   @id
+  hotelId   String   @default("hotel-mercier")
   name      String
   category  String   // "Hotel Policies", "Hotel Information", "Local Recommendations", "Upsells"
   format    String   // "PDF", "DOCX", "TXT", "CSV"
@@ -208,6 +238,8 @@ model KnowledgeDoc {
   aiReady   Boolean  @default(true)
   usedToday Int      @default(0)
   createdAt DateTime @default(now())
+
+  @@index([hotelId, category])
 }
 
 model AiRule {
@@ -218,11 +250,14 @@ model AiRule {
 }
 
 model ActivityItem {
-  id   String @id
-  at   String
-  kind String // "ai-reply", "task", "escalation", "upsell", "room", "maintenance", "guest"
-  text String
-  meta String?
+  id      String @id
+  hotelId String @default("hotel-mercier")
+  at      String
+  kind    String // "ai-reply", "task", "escalation", "upsell", "room", "maintenance", "guest"
+  text    String
+  meta    String?
+
+  @@index([hotelId, at])
 }
 
 model WaThread {
@@ -233,7 +268,6 @@ model WaThread {
   department String      // "Housekeeping", "Maintenance", "Front Office"
   messages   WaMessage[]
 }
-
 model WaMessage {
   id       String    @id
   threadId String
@@ -243,4 +277,71 @@ model WaMessage {
   at       String
   buttons  String    @default("[]") // JSON string
   chosen   String?
+}
+
+model PmsIntegration {
+  id                   String    @id @default(uuid())
+  hotelId              String    @unique
+  hotel                Hotel     @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  provider             String    @default("mews")
+  propertyId           String
+  accessTokenEncrypted String?   @db.Text
+  status               String    @default("connected") // "not-started", "in-progress", "connected", "error"
+  lastSyncAt           DateTime?
+  lastError            String?   @db.Text
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+}
+
+model EmailIntegration {
+  id          String   @id @default(uuid())
+  hotelId     String   @unique
+  email       String
+  provider    String   @default("credentials") // "oauth", "credentials", "manual"
+  imapHost    String?
+  imapPort    Int?
+  smtpHost    String?
+  smtpPort    Int?
+  status      String   @default("connected") // "not_configured", "in_progress", "connected", "error"
+  lastError   String?  @db.Text
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model WhatsAppIntegration {
+  id          String   @id @default(uuid())
+  hotelId     String
+  targetType  String   // "guest", "internal"
+  phoneNumber String
+  wabaId      String?
+  status      String   @default("connected") // "not_configured", "in_progress", "connected", "error"
+  lastError   String?  @db.Text
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([hotelId, targetType])
+}
+
+model AiConfig {
+  id            String   @id @default(uuid())
+  hotelId       String   @unique
+  tone          String   @default("warm") // "formal", "warm", "concise"
+  autonomyLevel String   @default("Autonomous") // "Autonomous", "Human Approval"
+  autoReply     Boolean  @default(true)
+  rulesJson     String?  @db.Text
+  updatedAt     DateTime @updatedAt
+}
+
+model OnboardingState {
+  id             String   @id @default(uuid())
+  hotelId        String   @unique
+  pmsDone        Boolean  @default(false)
+  emailDone      Boolean  @default(false)
+  guestWaDone    Boolean  @default(false)
+  internalWaDone Boolean  @default(false)
+  kbDone         Boolean  @default(false)
+  usersDone      Boolean  @default(false)
+  aiDone         Boolean  @default(false)
+  currentStep    Int      @default(1)
+  updatedAt      DateTime @updatedAt
 }
