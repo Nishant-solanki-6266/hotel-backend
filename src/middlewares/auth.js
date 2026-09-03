@@ -28,6 +28,7 @@ export const authenticate = async (req, res, next) => {
         initials: true,
         lastActive: true,
         whatsapp: true,
+        hotelId: true,
       },
     });
 
@@ -37,7 +38,7 @@ export const authenticate = async (req, res, next) => {
 
     req.user = {
       ...user,
-      hotelId: decoded.hotelId || user.hotelId,
+      hotelId: decoded.hotelId,
     };
 
     next();

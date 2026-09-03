@@ -8,92 +8,58 @@ datasource db {
 }
 
 model Hotel {
-<<<<<<< HEAD
-  id             String   @id @default("hotel-mercier")
-  name           String
-  legalName      String
-  stars          Int      @default(4)
-  roomsCount     Int      @default(48)
-  address        String
-  postcode       String
-  city           String
-  country        String
-  timezone       String   @default("Europe/Brussels")
-  currency       String   @default("€")
-  phone          String
-  email          String
-  website        String
-  bookingEngine  String
-  whatsappNumber String
-  checkIn        String   @default("15:00")
-  checkOut       String   @default("11:00")
-  vatNumber       String
-  description     String          @db.Text
-  waTopology      String          @default("separate")
-  onboardingDone  Boolean         @default(false)
-  onboardingSteps String          @default("[]")
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
-}
-
-enum Role {
-  manager
-  front_office @map("front-office")
-  housekeeping
-  maintenance
-=======
-  id              String   @id @default("hotel-mercier")
+  id              String          @id @default("hotel-mercier")
   name            String
   legalName       String
-  stars           Int      @default(4)
-  roomsCount      Int      @default(48)
+  stars           Int             @default(4)
+  roomsCount      Int             @default(48)
   address         String
   postcode        String
   city            String
   country         String
-  timezone        String   @default("Europe/Brussels")
-  currency        String   @default("€")
+  timezone        String          @default("Europe/Brussels")
+  currency        String          @default("€")
   phone           String
   email           String
   website         String
   bookingEngine   String
   whatsappNumber  String
-  checkIn         String   @default("15:00")
-  checkOut        String   @default("11:00")
+  checkIn         String          @default("15:00")
+  checkOut        String          @default("11:00")
   vatNumber       String
-  description     String   @db.Text
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-  onboardingDone  Boolean  @default(false)
-  onboardingSteps String   @default("[]")
-  waTopology      String   @default("separate")
+  description     String          @db.Text
+  waTopology      String          @default("separate")
+  onboardingDone  Boolean         @default(false)
+  onboardingSteps String          @default("[]")
+  aiMode          String          @default("Autonomous")
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @default(now()) @updatedAt
   pmsIntegration  PmsIntegration? @relation("HotelPmsIntegration")
->>>>>>> b6849cd89eecce180428088668d4d661547cafa5
+  subscription    Subscription?
+  invoices        Invoice[]
 }
 
 model User {
   id           String   @id @default(uuid())
+  hotelId      String?  @default("hotel-mercier")
   name         String
   email        String   @unique
-  passwordHash String
+  passwordHash String   @default("")
   role         String
-  title        String
-  phone        String
-  initials     String
+  title        String   @default("Staff")
+  phone        String   @default("")
+  initials     String   @default("")
   lastActive   String   @default("now")
   whatsapp     Boolean  @default(true)
   createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  updatedAt    DateTime @default(now()) @updatedAt
+
+  @@index([hotelId])
 }
 
 model Room {
-<<<<<<< HEAD
-  number       String   @id
-  mewsId       String?
-  hotelId      String?  @default("hotel-mercier")
-=======
   number       String  @id
->>>>>>> b6849cd89eecce180428088668d4d661547cafa5
+  hotelId      String  @default("hotel-mercier")
   floor        Int
   status       String  @default("Clean")
   cleaningType String  @default("Departure")
@@ -104,30 +70,13 @@ model Room {
   vip          Boolean @default(false)
   note         String? @db.Text
   updatedAt    String
+
+  @@index([hotelId])
 }
 
 model Guest {
-<<<<<<< HEAD
-  id             String        @id
-  mewsId         String?
-  hotelId        String?       @default("hotel-mercier")
-  name           String
-  room           String?
-  country        String
-  language       String
-  vip            Boolean       @default(false)
-  previousStays  Int           @default(0)
-  tags           String        @default("[]") // JSON string array
-  reservations   Reservation[]
-  conversations  Conversation[]
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-
-  @@index([hotelId, name])
-  @@index([hotelId, mewsId])
-=======
   id            String         @id
-  hotelId        String
+  hotelId       String
   name          String
   room          String?
   country       String
@@ -139,16 +88,10 @@ model Guest {
   updatedAt     DateTime       @updatedAt
   conversations Conversation[]
   reservations  Reservation[]
->>>>>>> b6849cd89eecce180428088668d4d661547cafa5
 }
 
 model Reservation {
   number    String   @id
-<<<<<<< HEAD
-  mewsId    String?
-  hotelId   String?  @default("hotel-mercier")
-=======
->>>>>>> b6849cd89eecce180428088668d4d661547cafa5
   guestId   String
   arrival   String
   departure String
@@ -208,10 +151,7 @@ model Message {
 
 model Task {
   id             String      @id
-<<<<<<< HEAD
-  hotelId        String?     @default("hotel-mercier")
-=======
->>>>>>> b6849cd89eecce180428088668d4d661547cafa5
+  hotelId        String      @default("hotel-mercier")
   title          String
   detail         String?     @db.Text
   room           String?
@@ -225,6 +165,8 @@ model Task {
   source         String      @default("AI Detection")
   conversationId String?
   trail          TaskTrail[]
+
+  @@index([hotelId])
 }
 
 model TaskTrail {
@@ -240,11 +182,7 @@ model TaskTrail {
 
 model Issue {
   id           String        @id
-<<<<<<< HEAD
-  hotelId      String?       @default("hotel-mercier")
-=======
   hotelId      String
->>>>>>> b6849cd89eecce180428088668d4d661547cafa5
   room         String
   title        String
   detail       String?       @db.Text
@@ -270,12 +208,8 @@ model IssueUpdate {
 }
 
 model Upsell {
-<<<<<<< HEAD
-  id      String @id
-  hotelId String? @default("hotel-mercier")
-=======
   id      String  @id
->>>>>>> b6849cd89eecce180428088668d4d661547cafa5
+  hotelId String  @default("hotel-mercier")
   guest   String
   room    String?
   offer   String
@@ -283,26 +217,13 @@ model Upsell {
   channel String
   status  String
   date    String
+
+  @@index([hotelId])
 }
 
 model KnowledgeDoc {
-<<<<<<< HEAD
-  id        String   @id
-  hotelId   String?  @default("hotel-mercier")
-  name      String
-  category  String   // "Hotel Policies", "Hotel Information", "Local Recommendations", "Upsells"
-  format    String   // "PDF", "DOCX", "TXT", "CSV"
-  size      String
-  updated   String
-  status    String   // "Indexed", "Processing", "Needs Review"
-  aiReady   Boolean  @default(true)
-  usedToday Int      @default(0)
-  createdAt DateTime @default(now())
-
-  @@index([hotelId, category])
-=======
   id              String           @id @default(uuid())
-  hotelId         String           // tenant isolation, must be provided on new uploads
+  hotelId         String           // tenant isolation
   name            String
   category        String
   format          String
@@ -319,35 +240,46 @@ model KnowledgeDoc {
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @default(now()) @updatedAt
   knowledgeChunks KnowledgeChunk[]
->>>>>>> b6849cd89eecce180428088668d4d661547cafa5
+
+  @@index([hotelId, category])
 }
 
+model KnowledgeChunk {
+  id             String       @id @default(uuid())
+  knowledgeDocId String       @map("docId")
+  hotelId        String       // tenant isolation
+  chunkIndex     Int
+  content        String       @db.Text
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @default(now()) @updatedAt
+  knowledgeDoc   KnowledgeDoc @relation(fields: [knowledgeDocId], references: [id], onDelete: Cascade)
+
+  @@index([knowledgeDocId])
+  @@index([hotelId])
+}
 
 model AiRule {
-  id    Int    @id @default(autoincrement())
-  topic String
-  mode  String
-  note  String @db.Text
+  id        Int      @id @default(autoincrement())
+  hotelId   String   @default("hotel-mercier")
+  topic     String
+  mode      String
+  note      String?  @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+
+  @@unique([hotelId, topic])
+  @@index([hotelId])
 }
 
 model ActivityItem {
-<<<<<<< HEAD
   id      String  @id
-  hotelId String? @default("hotel-mercier")
+  hotelId String
   at      String
-  kind    String // "ai-reply", "task", "escalation", "upsell", "room", "maintenance", "guest"
+  kind    String
   text    String
   meta    String?
 
   @@index([hotelId, at])
-=======
-  id   String  @id
-  hotelId String
-  at   String
-  kind String
-  text String
-  meta String?
->>>>>>> b6849cd89eecce180428088668d4d661547cafa5
 }
 
 model WaThread {
@@ -372,92 +304,60 @@ model WaMessage {
   @@index([threadId], map: "WaMessage_threadId_fkey")
 }
 
-model KnowledgeChunk {
-  id                String       @id @default(uuid())
-  knowledgeDocId    String       @map("docId")
-  hotelId           String       // redundancy for tenant isolation
-  chunkIndex        Int
-  content           String       @db.Text
-  createdAt         DateTime     @default(now())
-  updatedAt         DateTime     @default(now()) @updatedAt
-  knowledgeDoc      KnowledgeDoc @relation(fields: [knowledgeDocId], references: [id], onDelete: Cascade)
-
-  @@index([knowledgeDocId])
-  @@index([hotelId])
-}
 model PmsIntegration {
-<<<<<<< HEAD
-  id                   String    @id @default(uuid())
-  hotelId              String    @unique @default("hotel-mercier")
-  provider             String    @default("mews")
-  propertyId           String
-  accessTokenEncrypted String?   @db.Text
-  status               String    @default("connected") // "not-started", "in-progress", "connected", "error"
-  lastSyncAt           DateTime?
-  lastError            String?   @db.Text
-  createdAt            DateTime  @default(now())
-  updatedAt            DateTime  @updatedAt
-}
-
-model EmailIntegration {
-  id          String   @id @default(uuid())
-  hotelId     String   @unique
-  email       String
-  provider    String   @default("credentials") // "oauth", "credentials", "manual"
-  imapHost    String?
-  imapPort    Int?
-  smtpHost    String?
-  smtpPort    Int?
-  status      String   @default("connected") // "not_configured", "in_progress", "connected", "error"
-  lastError   String?  @db.Text
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-}
-
-model WhatsAppIntegration {
-  id          String   @id @default(uuid())
-  hotelId     String
-  targetType  String   // "guest", "internal"
-  phoneNumber String
-  wabaId      String?
-  status      String   @default("connected") // "not_configured", "in_progress", "connected", "error"
-  lastError   String?  @db.Text
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  @@unique([hotelId, targetType])
-}
-
-model AiConfig {
-  id            String   @id @default(uuid())
-  hotelId       String   @unique
-  tone          String   @default("warm") // "formal", "warm", "concise"
-  autonomyLevel String   @default("Autonomous") // "Autonomous", "Human Approval"
-  autoReply     Boolean  @default(true)
-  rulesJson     String?  @db.Text
-  updatedAt     DateTime @updatedAt
-}
-
-model OnboardingState {
-  id             String   @id @default(uuid())
-  hotelId        String   @unique
-  pmsDone        Boolean  @default(false)
-  emailDone      Boolean  @default(false)
-  guestWaDone    Boolean  @default(false)
-  internalWaDone Boolean  @default(false)
-  kbDone         Boolean  @default(false)
-  usersDone      Boolean  @default(false)
-  aiDone         Boolean  @default(false)
-  currentStep    Int      @default(1)
-  updatedAt      DateTime @updatedAt
-=======
-  hotelId               String   @id
+  hotelId               String    @id
   provider              String
   propertyId            String
-  accessTokenEncrypted  String?
-  status                String   @default("disconnected")
+  accessTokenEncrypted  String?   @db.Text
+  status                String    @default("disconnected")
   lastSyncAt            DateTime?
-  lastError             String?
-  hotel                 Hotel    @relation("HotelPmsIntegration", fields: [hotelId], references: [id], onDelete: Cascade)
->>>>>>> b6849cd89eecce180428088668d4d661547cafa5
+  lastError             String?   @db.Text
+  hotel                 Hotel     @relation("HotelPmsIntegration", fields: [hotelId], references: [id], onDelete: Cascade)
+}
+
+model Subscription {
+  id                     String    @id @default(uuid())
+  hotelId                String    @unique
+  plan                   String    @default("pro")
+  status                 String    @default("Active")
+  billingCycle           String    @default("monthly")
+  rooms                  Int       @default(48)
+  pricePerRoom           Float     @default(7.0)
+  seatsUsed              Int       @default(4)
+  startedOn              String    @default("14 Aug 2025")
+  renewsOn               String    @default("14 Aug 2026")
+  paymentBrand           String?   @default("Visa")
+  paymentLast4           String?   @default("4417")
+  paymentExpiry          String?   @default("09/28")
+  paymentHolder          String?   @default("Hotel Mercier BV")
+  provider               String?   @default("none")
+  providerCustomerId     String?
+  providerSubscriptionId String?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @default(now()) @updatedAt
+  hotel                  Hotel     @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  invoices               Invoice[]
+
+  @@index([hotelId])
+}
+
+model Invoice {
+  id                String        @id @default(uuid())
+  hotelId           String
+  subscriptionId    String?
+  number            String
+  date              String
+  period            String
+  amount            Float
+  currency          String        @default("EUR")
+  status            String        @default("Paid")
+  pdfUrl            String?
+  providerInvoiceId String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @default(now()) @updatedAt
+  hotel             Hotel         @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  subscription      Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([hotelId])
+  @@index([subscriptionId])
 }
