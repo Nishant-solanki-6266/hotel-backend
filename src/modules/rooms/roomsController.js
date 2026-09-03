@@ -3,8 +3,9 @@ import { errorResponse, successResponse } from '../../utils/response.js';
 
 export const getRooms = async (req, res, next) => {
   try {
+    const hotelId = req.user?.hotelId || 'hotel-mercier';
     const { floor, status } = req.query;
-    const where = {};
+    const where = { hotelId };
     if (floor) where.floor = parseInt(floor, 10);
     if (status) where.status = status;
 
@@ -20,9 +21,10 @@ export const getRooms = async (req, res, next) => {
 
 export const getRoomByNumber = async (req, res, next) => {
   try {
+    const hotelId = req.user?.hotelId || 'hotel-mercier';
     const { number } = req.params;
-    const room = await prisma.room.findUnique({
-      where: { number },
+    const room = await prisma.room.findFirst({
+      where: { number, hotelId },
     });
     if (!room) {
       return errorResponse(res, `Room ${number} not found`, 404);
@@ -35,10 +37,11 @@ export const getRoomByNumber = async (req, res, next) => {
 
 export const updateRoomStatus = async (req, res, next) => {
   try {
+    const hotelId = req.user?.hotelId || 'hotel-mercier';
     const { number } = req.params;
     const { status, cleaner, note } = req.body;
 
-    const existing = await prisma.room.findUnique({ where: { number } });
+    const existing = await prisma.room.findFirst({ where: { number, hotelId } });
     if (!existing) {
       return errorResponse(res, `Room ${number} not found`, 404);
     }
@@ -60,12 +63,13 @@ export const updateRoomStatus = async (req, res, next) => {
     await prisma.activityItem.create({
       data: {
         id: `act-${Date.now()}`,
+        hotelId,
         at: timeStr,
         kind: 'room',
         text: `Room ${number} set to ${status || existing.status}`,
         meta: cleaner ? `by ${cleaner}` : undefined,
       },
-    });
+    }).catch(() => {});
 
     return successResponse(res, updated, `Room ${number} updated`);
   } catch (error) {

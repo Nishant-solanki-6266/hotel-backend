@@ -40,11 +40,11 @@ export const getBriefing = async (req, res, next) => {
       activities,
     ] = await Promise.all([
       prisma.hotel.findUnique({ where: { id: hotelId } }).catch(() => null),
-      prisma.room.findMany(),
-      prisma.task.count({ where: { status: { not: 'Completed' } } }),
+      prisma.room.findMany({ where: { hotelId } }),
+      prisma.task.count({ where: { hotelId, status: { not: 'Completed' } } }),
       prisma.issue.count({ where: { hotelId, status: { not: 'Completed' } } }),
-      prisma.conversation.findMany(),
-      prisma.upsell.findMany(),
+      prisma.conversation.findMany({ where: { guest: { hotelId } } }),
+      prisma.upsell.findMany({ where: { hotelId } }).catch(() => []),
       prisma.activityItem.findMany({ where: { hotelId }, take: 10, orderBy: { id: 'desc' } }),
     ]);
 

@@ -9,17 +9,29 @@ export async function parseFile(file) {
   const buffer = file.buffer;
 
   if (mime === 'application/pdf' || ext === 'pdf') {
+    if (!buffer.includes(Buffer.from('%%EOF'))) {
+      throw new Error('File parsing failed: Corrupted PDF structure');
+    }
     try {
       const { createRequire } = await import('module');
       const req = createRequire(import.meta.url);
       const pdfParseModule = req('pdf-parse');
-      if (typeof pdfParseModule === 'function') {
-        const data = await pdfParseModule(buffer);
-        return data.text || '';
+      const parseFn = typeof pdfParseModule === 'function' ? pdfParseModule : pdfParseModule?.default;
+      if (typeof parseFn === 'function') {
+        const data = await parseFn(buffer);
+        if (data && data.text && data.text.trim()) {
+          return data.text;
+        }
       }
-    } catch {
-      return buffer.toString('utf8').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, ' ').trim();
+    } catch (e) {
+      // fallback to stream extraction below
     }
+    const raw = buffer.toString('utf8');
+    const matches = raw.match(/\(([^)]+)\)\s*Tj/g);
+    if (matches && matches.length > 0) {
+      return matches.map(m => m.replace(/[()]/g, '').replace(/\s*Tj/, '')).join(' ');
+    }
+    return raw;
   }
 
   if (mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || ext === 'docx') {

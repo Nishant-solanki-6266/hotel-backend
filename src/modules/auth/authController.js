@@ -25,7 +25,7 @@ export const login = async (req, res, next) => {
       return errorResponse(res, 'User not found', 404);
     }
 
-    const token = signToken({ id: user.id, role: user.role, email: user.email });
+    const token = signToken({ id: user.id, role: user.role, email: user.email, hotelId: user.hotelId || 'hotel-mercier' });
 
     const safeUser = {
       id: user.id,

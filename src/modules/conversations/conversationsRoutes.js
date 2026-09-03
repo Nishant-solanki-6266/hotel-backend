@@ -1,16 +1,22 @@
 import { Router } from 'express';
+import { optionalAuth } from '../../middlewares/auth.js';
 import {
   getConversations,
   getConversationById,
   sendReply,
   toggleTakeover,
+  escalateConversation,
+  resolveConversation,
 } from './conversationsController.js';
 
 const router = Router();
+router.use(optionalAuth);
 
 router.get('/', getConversations);
 router.get('/:id', getConversationById);
 router.post('/:id/reply', sendReply);
 router.post('/:id/takeover', toggleTakeover);
+router.post('/:id/escalate', escalateConversation);
+router.post('/:id/resolve', resolveConversation);
 
 export default router;
