@@ -3,8 +3,9 @@ import { errorResponse, successResponse } from '../../utils/response.js';
 
 export const getUpsells = async (req, res, next) => {
   try {
+    const hotelId = req.user?.hotelId || 'hotel-mercier';
     const { status } = req.query;
-    const where = {};
+    const where = { hotelId };
     if (status) where.status = status;
 
     const upsells = await prisma.upsell.findMany({
@@ -19,10 +20,13 @@ export const getUpsells = async (req, res, next) => {
 
 export const updateUpsellStatus = async (req, res, next) => {
   try {
+    const hotelId = req.user?.hotelId || 'hotel-mercier';
     const { id } = req.params;
     const { status } = req.body;
 
-    const existing = await prisma.upsell.findUnique({ where: { id } });
+    const existing = await prisma.upsell.findFirst({
+      where: { id, hotelId },
+    });
     if (!existing) {
       return errorResponse(res, 'Upsell not found', 404);
     }
