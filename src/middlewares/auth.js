@@ -12,6 +12,10 @@ export const authenticate = async (req, res, next) => {
     const token = authHeader.split(' ')[1];
     const decoded = verifyToken(token);
 
+    if (!decoded || !decoded.id) {
+      return errorResponse(res, 'Invalid token payload', 401);
+    }
+
     const user = await prisma.user.findUnique({
       where: { id: decoded.id },
       select: {
@@ -31,7 +35,11 @@ export const authenticate = async (req, res, next) => {
       return errorResponse(res, 'User not found or deactivated', 401);
     }
 
-    req.user = user;
+    req.user = {
+      ...user,
+      hotelId: decoded.hotelId || user.hotelId,
+    };
+
     next();
   } catch (error) {
     return errorResponse(res, 'Invalid or expired token', 401);

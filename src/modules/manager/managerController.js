@@ -90,8 +90,10 @@ export const getAiRules = async (req, res, next) => {
 
 export const getKnowledgeDocs = async (req, res, next) => {
   try {
+    const hotelId = req.user?.hotelId || 'hotel-mercier';
     const docs = await prisma.knowledgeDoc.findMany({
-      orderBy: { updated: 'desc' },
+      where: { hotelId },
+      orderBy: { updatedAt: 'desc' },
     });
     return successResponse(res, docs, 'Knowledge documents');
   } catch (error) {
