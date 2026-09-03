@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import authRoutes from './modules/auth/authRoutes.js';
 import roomsRoutes from './modules/rooms/roomsRoutes.js';
+import knowledgeRoutes from './modules/knowledge/knowledgeRoutes.js';
 import tasksRoutes from './modules/tasks/tasksRoutes.js';
 import issuesRoutes from './modules/issues/issuesRoutes.js';
 import conversationsRoutes from './modules/conversations/conversationsRoutes.js';
@@ -24,5 +25,6 @@ router.use('/manager', managerRoutes);
 router.use('/upsells', upsellsRoutes);
 router.use('/whatsapp', whatsappRoutes);
 router.use('/onboarding', onboardingRoutes);
+router.use('/knowledge', knowledgeRoutes);
 
 export default router;
