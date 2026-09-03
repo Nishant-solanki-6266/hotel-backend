@@ -1,72 +1,117 @@
-# Hotelogx Connect Backend
+# 🗄️ Hotelogx Connect Backend API
 
-Production-grade Express + Prisma + MySQL backend for Hotelogx Connect.
+Production-grade **Express.js + Prisma ORM + MySQL** backend API service for **Hotelogx Connect**.
 
-## Setup Instructions
+---
 
-### 1. Configure MySQL Database Credentials
-Open `backend/.env` and update `DATABASE_URL` with your MySQL username and password:
+## 🛠️ Tech Stack
+
+- **Runtime**: Node.js (ES Modules)
+- **Framework**: Express.js
+- **Database**: MySQL
+- **ORM**: Prisma ORM (v6)
+- **Authentication**: JWT (JSON Web Tokens) & `bcryptjs` for password hashing
+- **Environment Management**: `dotenv`
+- **Development Tool**: Nodemon
+
+---
+
+## 🚀 Setup Instructions
+
+### 1. Configure Environment Variables (`.env`)
+Create or edit `.env` in the `hotel-backend` directory with your MySQL credentials:
+
 ```env
-DATABASE_URL="mysql://<YOUR_USER>:<YOUR_PASSWORD>@localhost:3306/hotel_db"
+DATABASE_URL="mysql://root:password@localhost:3306/hotel_db"
+JWT_SECRET="your-super-secret-jwt-key"
+PORT=5000
 ```
 
 ### 2. Install Dependencies
 ```bash
-cd backend
+cd hotel-backend
 npm install
 ```
 
-### 3. Generate Prisma Client & Push Schema to MySQL
+### 3. Generate Prisma Client & Push Database Schema
 ```bash
-npx prisma generate
-npx prisma db push
+# Generate Prisma Client types
+npm run prisma:generate
+
+# Push schema directly to MySQL database
+npm run prisma:push
 ```
 
-### 4. Seed Initial Hotel Mercier Data
+### 4. Seed Initial Hotel Data (Optional)
+Populate the database with sample staff, rooms, tasks, and initial configurations:
 ```bash
 npm run prisma:seed
 ```
 
 ### 5. Start Backend Server
 ```bash
+# Development mode (with auto-restart via Nodemon)
 npm run dev
+
+# Production mode
+npm run start
 ```
-The server will run on `http://localhost:5000`.
+> Server runs on **`http://localhost:5000`**
 
 ---
 
-## Available API Endpoints
+## 📜 Available NPM Scripts
 
-- **Health Check**: `GET /api/health`
-- **Auth**:
-  - `POST /api/auth/login`
-  - `GET /api/auth/me`
-  - `GET /api/auth/staff`
-- **Rooms**:
-  - `GET /api/rooms`
-  - `GET /api/rooms/:number`
-  - `PATCH /api/rooms/:number/status`
-- **Tasks**:
-  - `GET /api/tasks`
-  - `POST /api/tasks`
-  - `PATCH /api/tasks/:id/status`
-- **Issues (Maintenance)**:
-  - `GET /api/issues`
-  - `POST /api/issues`
-  - `PATCH /api/issues/:id/status`
-- **Conversations & Guest Chat**:
-  - `GET /api/conversations`
-  - `GET /api/conversations/:id`
-  - `POST /api/conversations/:id/reply`
-  - `POST /api/conversations/:id/takeover`
-- **Manager Portal**:
-  - `GET /api/manager/briefing`
-  - `GET /api/manager/activity`
-  - `GET /api/manager/rules`
-  - `GET /api/manager/knowledge`
-- **Upsells Pipeline**:
-  - `GET /api/upsells`
-  - `PATCH /api/upsells/:id/status`
-- **WhatsApp Simulator**:
-  - `GET /api/whatsapp/threads`
-  - `POST /api/whatsapp/action`
+- `npm run dev`: Starts the server with Nodemon for hot-reloading.
+- `npm run start`: Runs the server with standard Node.js.
+- `npm run prisma:generate`: Generates updated Prisma Client code.
+- `npm run prisma:push`: Applies Prisma schema changes directly to MySQL.
+- `npm run prisma:seed`: Seeds initial hotel data into MySQL.
+- `npm run prisma:studio`: Opens Prisma Studio GUI in browser (`http://localhost:5555`).
+
+---
+
+## 📡 API Endpoints Reference
+
+### 🏥 Health Check
+- `GET /api/health` - Check backend service health status.
+
+### 🔐 Authentication
+- `POST /api/auth/login` - Staff & Manager Login.
+- `GET /api/auth/me` - Get currently authenticated user details.
+- `GET /api/auth/staff` - Get list of all staff members.
+
+### 🛏️ Rooms & Housekeeping
+- `GET /api/rooms` - Fetch list of all hotel rooms & current status.
+- `GET /api/rooms/:number` - Fetch specific room details.
+- `PATCH /api/rooms/:number/status` - Update room cleaning / maintenance status.
+
+### 📋 Tasks & Assignments
+- `GET /api/tasks` - List all staff tasks.
+- `POST /api/tasks` - Create a new staff task.
+- `PATCH /api/tasks/:id/status` - Update task completion status.
+
+### 🛠️ Issues & Maintenance
+- `GET /api/issues` - List maintenance issues.
+- `POST /api/issues` - Log a new maintenance issue.
+- `PATCH /api/issues/:id/status` - Update maintenance issue status.
+
+### 💬 Conversations & Guest Chat
+- `GET /api/conversations` - List guest conversations.
+- `GET /api/conversations/:id` - Fetch chat history for a conversation.
+- `POST /api/conversations/:id/reply` - Send reply message to guest.
+- `POST /api/conversations/:id/takeover` - Human takeover from AI assistant.
+
+### 📊 Manager Portal & AI Intelligence
+- `GET /api/manager/briefing` - Get daily AI manager briefing.
+- `GET /api/manager/activity` - Get real-time system activity log.
+- `GET /api/manager/rules` - Get active automation rules.
+- `GET /api/manager/knowledge` - Get hotel knowledge base items.
+
+### 🏷️ Upsells Pipeline
+- `GET /api/upsells` - List active upsell offers and room upgrades.
+- `PATCH /api/upsells/:id/status` - Update upsell deal status.
+
+### 📱 WhatsApp Simulator
+- `GET /api/whatsapp/threads` - Get active WhatsApp thread simulations.
+- `POST /api/whatsapp/action` - Trigger simulated WhatsApp actions/messages.
