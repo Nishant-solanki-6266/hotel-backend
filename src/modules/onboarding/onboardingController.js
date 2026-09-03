@@ -1,5 +1,7 @@
+import bcrypt from 'bcryptjs';
 import { prisma } from '../../config/database.js';
 import { errorResponse, successResponse } from '../../utils/response.js';
+import { sendBrevoInvitationEmail } from '../../utils/mailer.js';
 
 let columnsChecked = false;
 let inMemorySteps = ['profile'];
@@ -295,11 +297,83 @@ export const saveOnboardingStep = async (req, res, next) => {
       }
     }
 
+    // Handle Step 7: Invite Users (User Upsert + Brevo Transactional Email Dispatch)
+    if (stepKey === 'users') {
+      try {
+        const inviteEmail = data?.email || data?.address;
+        const inviteRole = data?.role || 'front-office';
+
+        if (inviteEmail) {
+          const rawName = inviteEmail.split('@')[0].replace(/[._-]/g, ' ');
+          const formattedName = rawName.charAt(0).toUpperCase() + rawName.slice(1);
+          const initials = formattedName.split(' ').map(w => w[0]?.toUpperCase() || '').join('').slice(0, 2) || 'ST';
+
+          const roleTitleMap = {
+            'manager': 'General Manager',
+            'front-office': 'Front Desk Agent',
+            'housekeeping': 'Housekeeping Staff',
+            'maintenance': 'Maintenance Technician',
+          };
+
+          const userTitle = roleTitleMap[inviteRole] || 'Staff Member';
+          const isWhatsappRole = inviteRole === 'housekeeping' || inviteRole === 'maintenance';
+
+          // Safe default bcrypt password hash for immediate direct workspace access
+          const defaultHash = bcrypt.hashSync('demo-access', 10);
+
+          // 1. Physically Upsert User Record into MySQL Database
+          await prisma.user.upsert({
+            where: { email: inviteEmail.toLowerCase() },
+            update: {
+              role: inviteRole,
+              title: userTitle,
+              whatsapp: isWhatsappRole,
+            },
+            create: {
+              name: formattedName,
+              email: inviteEmail.toLowerCase(),
+              role: inviteRole,
+              title: userTitle,
+              phone: '',
+              initials,
+              whatsapp: isWhatsappRole,
+              passwordHash: defaultHash,
+            },
+          });
+
+          // 2. Dispatch Branded Invitation Email via Brevo API
+          await sendBrevoInvitationEmail({
+            toEmail: inviteEmail.toLowerCase(),
+            toName: formattedName,
+            role: inviteRole,
+            title: userTitle,
+            hotelName: 'Hotel Mercier',
+            loginUrl: 'http://localhost:5173/login',
+            temporaryPassword: 'demo-access',
+          });
+
+          // 3. Log Activity Feed Entry in MySQL
+          await prisma.activityItem.create({
+            data: {
+              id: `act-${Date.now()}`,
+              at: new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
+              kind: 'task',
+              text: `Invited team member: ${inviteEmail} (${userTitle})`,
+              meta: 'Setup Wizard',
+            },
+          });
+        }
+      } catch (userErr) {
+        console.warn('[Onboarding Users Warning]', userErr.message);
+      }
+    }
+
     return successResponse(res, {
       stepKey,
       onboardingSteps: inMemorySteps,
-      email: data?.address,
+      email: data?.email || data?.address,
       phone: data?.phone,
+      role: data?.role,
     }, `Step ${stepKey} saved successfully`);
   } catch (error) {
     next(error);

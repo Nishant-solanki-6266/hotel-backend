@@ -1,6 +1,6 @@
 import path from 'path';
 import fs from 'fs';
-import { v4 as uuidv4 } from 'uuid';
+import crypto from 'crypto';
 
 /**
  * Ensure directory exists safely
@@ -29,7 +29,7 @@ export function getKnowledgeDir(hotelId) {
 export async function saveKnowledgeFile(hotelId, file) {
   const hotelDir = getKnowledgeDir(hotelId);
   const ext = path.extname(file.originalname).toLowerCase();
-  const uuid = uuidv4();
+  const uuid = crypto.randomUUID();
   const filename = `${uuid}${ext}`;
   const absolutePath = path.join(hotelDir, filename);
 
