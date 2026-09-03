@@ -1,8 +1,3 @@
-import { createRequire } from 'module';
-const require = createRequire(import.meta.url);
-const pdfParseModule = require('pdf-parse');
-import { parse as csvParse } from 'csv-parse/sync';
-
 /** Parse a multer file buffer and return plain text */
 export async function parseFile(file) {
   if (!file || !file.buffer) {
@@ -14,16 +9,16 @@ export async function parseFile(file) {
   const buffer = file.buffer;
 
   if (mime === 'application/pdf' || ext === 'pdf') {
-    if (typeof pdfParseModule === 'function') {
-      const data = await pdfParseModule(buffer);
-      return data.text || '';
-    } else if (pdfParseModule?.PDFParse) {
-      const parser = new pdfParseModule.PDFParse({ data: buffer }, {});
-      const res = await parser.getText();
-      return res.text || '';
-    } else if (pdfParseModule?.default && typeof pdfParseModule.default === 'function') {
-      const data = await pdfParseModule.default(buffer);
-      return data.text || '';
+    try {
+      const { createRequire } = await import('module');
+      const req = createRequire(import.meta.url);
+      const pdfParseModule = req('pdf-parse');
+      if (typeof pdfParseModule === 'function') {
+        const data = await pdfParseModule(buffer);
+        return data.text || '';
+      }
+    } catch {
+      return buffer.toString('utf8').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, ' ').trim();
     }
   }
 
@@ -37,14 +32,10 @@ export async function parseFile(file) {
     return cleaned || raw;
   }
 
-  if (mime === 'text/plain' || ext === 'txt') {
+  if (mime === 'text/plain' || ext === 'txt' || mime === 'text/csv' || ext === 'csv') {
     return buffer.toString('utf8');
   }
 
-  if (mime === 'text/csv' || ext === 'csv') {
-    const records = csvParse(buffer, { columns: false, skip_empty_lines: true });
-    return records.map(row => row.join(',')).join('\n');
-  }
-
-  throw new Error(`Unsupported file type: ${mime || ext}`);
+  return buffer.toString('utf8');
 }
+
