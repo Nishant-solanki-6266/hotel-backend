@@ -28,6 +28,9 @@ model Hotel {
   checkOut       String   @default("11:00")
   vatNumber      String
   description    String   @db.Text
+  waTopology     String   @default("separate")
+  onboardingDone Boolean  @default(false)
+  onboardingSteps String  @default("[]") // JSON array of done step keys
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 }

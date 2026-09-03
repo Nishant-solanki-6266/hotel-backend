@@ -7,6 +7,7 @@ import conversationsRoutes from './modules/conversations/conversationsRoutes.js'
 import managerRoutes from './modules/manager/managerRoutes.js';
 import upsellsRoutes from './modules/upsells/upsellsRoutes.js';
 import whatsappRoutes from './modules/whatsapp/whatsappRoutes.js';
+import onboardingRoutes from './modules/onboarding/onboardingRoutes.js';
 
 const router = Router();
 
@@ -22,5 +23,6 @@ router.use('/conversations', conversationsRoutes);
 router.use('/manager', managerRoutes);
 router.use('/upsells', upsellsRoutes);
 router.use('/whatsapp', whatsappRoutes);
+router.use('/onboarding', onboardingRoutes);
 
 export default router;
