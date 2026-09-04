@@ -11,6 +11,7 @@ import whatsappRoutes from './modules/whatsapp/whatsappRoutes.js';
 import onboardingRoutes from './modules/onboarding/onboardingRoutes.js';
 import usersRoutes from './modules/users/userRoutes.js';
 import billingRoutes from './modules/billing/billingRoutes.js';
+import pmsRoutes from './modules/pms/pmsRoutes.js';
 
 const router = Router();
 
@@ -30,5 +31,6 @@ router.use('/onboarding', onboardingRoutes);
 router.use('/knowledge', knowledgeRoutes);
 router.use('/users', usersRoutes);
 router.use('/billing', billingRoutes);
+router.use('/pms', pmsRoutes);
 
 export default router;
