@@ -118,7 +118,7 @@ export const updateTaskStatus = async (req, res, next) => {
   try {
     const hotelId = req.user?.hotelId || 'hotel-mercier';
     const { id } = req.params;
-    const { status, note, via = 'dashboard' } = req.body;
+    const { status, note, via = 'dashboard', assignee } = req.body;
 
     const existing = await prisma.task.findFirst({
       where: { id, hotelId },
@@ -135,11 +135,12 @@ export const updateTaskStatus = async (req, res, next) => {
     const updated = await prisma.task.update({
       where: { id },
       data: {
-        status,
+        status: status || existing.status,
+        assignee: assignee !== undefined ? assignee : existing.assignee,
         trail: {
           create: {
             at: timeStr,
-            text: note || `Status updated to ${status}`,
+            text: note || `Status updated to ${status || 'updated'}`,
             via,
           },
         },

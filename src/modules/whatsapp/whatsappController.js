@@ -117,6 +117,7 @@ export const getThreads = async (req, res, next) => {
  */
 export const handleAction = async (req, res, next) => {
   try {
+    const hotelId = req.user?.hotelId || req.body?.hotelId || 'hotel-mercier';
     const { threadId, messageId, label, staffName, room, actionType, phone } = req.body;
 
     const now = new Date();
@@ -124,55 +125,126 @@ export const handleAction = async (req, res, next) => {
 
     // If messageId provided, mark chosen label
     if (messageId) {
-      await prisma.waMessage.update({
+      await prisma.waMessage.updateMany({
         where: { id: messageId },
         data: { chosen: label },
       }).catch(() => {});
     }
 
-    // Process action based on label/type
-    if (actionType === 'room_clean' || label?.toLowerCase().includes('clean') || label?.toLowerCase().includes('ready')) {
-      const roomNum = room || label?.match(/\d+/)?.[0];
-      if (roomNum) {
-        await prisma.room.update({
-          where: { number: roomNum },
-          data: { status: 'Clean', cleaner: staffName || 'Staff', updatedAt: timeStr },
-        }).catch(() => {});
+    const roomNum = room || label?.match(/\d{3}/)?.[0];
 
-        // Complete any matching cleaning task
-        const matchingTask = await prisma.task.findFirst({
-          where: { room: roomNum, department: 'Housekeeping', status: { not: 'Completed' } },
-        });
+    // Multi-tenant Room Validation
+    if (roomNum) {
+      const roomRecord = await prisma.room.findFirst({
+        where: { number: roomNum, hotelId },
+      });
 
-        if (matchingTask) {
-          await prisma.task.update({
-            where: { id: matchingTask.id },
+      if (roomRecord) {
+        if (actionType === 'room_clean' || label === 'Cleaned' || label === 'Needs Inspection') {
+          await prisma.room.updateMany({
+            where: { number: roomNum, hotelId },
+            data: { status: 'Clean', cleaner: staffName || roomRecord.cleaner || 'Staff', updatedAt: timeStr },
+          });
+
+          // Complete any active cleaning task in this hotel
+          await prisma.task.updateMany({
+            where: { room: roomNum, hotelId, department: 'Housekeeping', status: { not: 'Completed' } },
+            data: { status: 'Completed' },
+          });
+        } else if (label === 'Start Cleaning' || label?.toLowerCase().includes('start cleaning')) {
+          await prisma.room.updateMany({
+            where: { number: roomNum, hotelId },
+            data: { status: 'Cleaning', cleaner: staffName || roomRecord.cleaner || 'Staff', updatedAt: timeStr },
+          });
+        } else if (label === 'Maintenance Issue') {
+          await prisma.room.updateMany({
+            where: { number: roomNum, hotelId },
+            data: { status: 'Maintenance', note: `Issue reported via WhatsApp by ${staffName || 'Housekeeping'}` },
+          });
+
+          const issueId = `MT-${Date.now().toString().slice(-4)}`;
+          await prisma.issue.create({
             data: {
-              status: 'Completed',
-              trail: {
-                create: {
-                  at: timeStr,
-                  text: `Completed by ${staffName || 'Staff'} via WhatsApp`,
-                  via: 'whatsapp',
-                },
-              },
+              id: issueId,
+              hotelId,
+              room: roomNum,
+              title: `Issue reported in ${roomNum} during cleaning`,
+              detail: `Reported by ${staffName || 'Housekeeper'} via WhatsApp. Awaiting technician assessment.`,
+              priority: 'High',
+              reportedBy: staffName || 'Housekeeper via WhatsApp',
+              via: 'WhatsApp',
+              createdAt: timeStr,
+              status: 'Open',
+              outOfService: true,
             },
           }).catch(() => {});
+        } else if (label === 'DND' || label === 'Guest Inside') {
+          await prisma.room.updateMany({
+            where: { number: roomNum, hotelId },
+            data: { status: label === 'DND' ? 'DND' : 'Guest Inside', updatedAt: timeStr },
+          });
         }
       }
     }
 
-    // Append outbound confirmation message in the database thread
-    if (threadId) {
-      await prisma.waMessage.create({
-        data: {
-          id: `wam-${Date.now()}`,
-          threadId,
-          from: 'staff',
-          body: label || 'Action confirmed',
-          at: timeStr,
+    if (label?.toLowerCase().includes('delivered') || label?.toLowerCase().includes('done')) {
+      const matchingTask = await prisma.task.findFirst({
+        where: {
+          hotelId,
+          department: 'Housekeeping',
+          status: { not: 'Completed' },
+          ...(roomNum ? { room: roomNum } : {}),
         },
-      }).catch(() => {});
+        orderBy: { createdAt: 'desc' },
+      });
+
+      if (matchingTask) {
+        await prisma.task.updateMany({
+          where: { id: matchingTask.id, hotelId },
+          data: { status: 'Completed' },
+        });
+
+        if (matchingTask.conversationId) {
+          await prisma.message.create({
+            data: {
+              id: `m-${Date.now()}`,
+              conversationId: matchingTask.conversationId,
+              author: 'ai',
+              channel: 'whatsapp',
+              body: `Our housekeeping team has delivered this to Room ${matchingTask.room || roomNum || ''}. Please let us know if you need anything else.`,
+              at: timeStr,
+              confidence: 0.98,
+            },
+          }).catch(() => {});
+        }
+
+        await prisma.activityItem.create({
+          data: {
+            id: `act-${Date.now()}`,
+            hotelId,
+            at: timeStr,
+            kind: 'task',
+            text: `Task completed via WhatsApp: "${matchingTask.title}"`,
+            meta: staffName || 'Housekeeping',
+          },
+        }).catch(() => {});
+      }
+    }
+
+    // Append outbound confirmation message in the database thread if thread exists
+    if (threadId) {
+      const threadExists = await prisma.waThread.findUnique({ where: { id: threadId } }).catch(() => null);
+      if (threadExists) {
+        await prisma.waMessage.create({
+          data: {
+            id: `wam-${Date.now()}`,
+            threadId,
+            from: 'staff',
+            body: label || 'Action confirmed',
+            at: timeStr,
+          },
+        }).catch(() => {});
+      }
     }
 
     // If phone number exists, dispatch live Meta WhatsApp message safely

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { authenticate } from '../../middlewares/auth.js';
+import { authenticate, optionalAuth } from '../../middlewares/auth.js';
 import { listKnowledge, uploadKnowledge, deleteKnowledge } from './knowledgeController.js';
 import path from 'path';
 
@@ -35,10 +35,9 @@ try {
   uploadMiddleware = (req, res, next) => next();
 }
 
-router.use(authenticate);
-router.get('/', listKnowledge);
-router.post('/', uploadMiddleware, uploadKnowledge);
-router.delete('/:id', deleteKnowledge);
+router.get('/', authenticate, listKnowledge);
+router.post('/', authenticate, uploadMiddleware, uploadKnowledge);
+router.delete('/:id', authenticate, deleteKnowledge);
 
 export default router;
 
