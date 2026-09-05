@@ -269,6 +269,7 @@ export const saveOnboardingStep = async (req, res, next) => {
         await prisma.activityItem.create({
           data: {
             id: `act-${Date.now()}`,
+            hotelId: req.user?.hotelId || 'hotel-mercier',
             at: new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
             kind: 'room',
             text: `Guest mailbox connected: ${data?.address || 'reception@hotelmercier.be'}`,
@@ -286,6 +287,7 @@ export const saveOnboardingStep = async (req, res, next) => {
         await prisma.activityItem.create({
           data: {
             id: `act-${Date.now()}`,
+            hotelId: req.user?.hotelId || 'hotel-mercier',
             at: new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
             kind: 'room',
             text: `Internal Staff WhatsApp connected: ${data?.phone || '+32 3 227 41 09'}`,
@@ -356,6 +358,7 @@ export const saveOnboardingStep = async (req, res, next) => {
           await prisma.activityItem.create({
             data: {
               id: `act-${Date.now()}`,
+              hotelId: req.user?.hotelId || 'hotel-mercier',
               at: new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
               kind: 'task',
               text: `Invited team member: ${inviteEmail} (${userTitle})`,
@@ -398,6 +401,7 @@ export const completeOnboarding = async (req, res, next) => {
       await prisma.activityItem.create({
         data: {
           id: `act-${Date.now()}`,
+          hotelId: req.user?.hotelId || 'hotel-mercier',
           at: new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
           kind: 'room',
           text: 'Hotel Mercier onboarding completed and live!',
