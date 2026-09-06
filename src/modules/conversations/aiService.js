@@ -165,9 +165,10 @@ export async function generateWithGemini({ prompt, systemInstruction = '' }) {
   if (!apiKey) return null;
 
   const models = [
-    process.env.GEMINI_MODEL || 'gemini-2.5-flash',
-    'gemini-1.5-flash',
-    'gemini-2.0-flash',
+    process.env.GEMINI_MODEL || 'gemini-3.6-flash',
+    'gemini-3.5-flash',
+    'gemini-flash-latest',
+    'gemini-2.5-flash',
   ];
 
   for (const model of models) {
@@ -197,9 +198,9 @@ export async function generateWithGemini({ prompt, systemInstruction = '' }) {
       );
 
       if (!res.ok) {
-        console.warn(`[Gemini API] Model ${model} returned status ${res.status}`);
         // If unauthorized/forbidden, key is invalid; don't loop endlessly
         if (res.status === 401 || res.status === 403) {
+          console.warn(`[Gemini API] API Key unauthorized (status ${res.status})`);
           return null;
         }
         continue;
