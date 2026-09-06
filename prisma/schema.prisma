@@ -306,28 +306,6 @@ model ActivityItem {
   @@index([hotelId])
 }
 
-model WaThread {
-  id         String      @id
-  contact    String
-  role       String
-  phone      String
-  department String
-  messages   WaMessage[]
-}
-
-model WaMessage {
-  id       String   @id
-  threadId String
-  from     String
-  body     String   @db.Text
-  at       String
-  buttons  String   @default("[]")
-  chosen   String?
-  thread   WaThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
-
-  @@index([threadId], map: "WaMessage_threadId_fkey")
-}
-
 model PmsIntegration {
   hotelId              String    @id
   provider             String    @default("mews")
