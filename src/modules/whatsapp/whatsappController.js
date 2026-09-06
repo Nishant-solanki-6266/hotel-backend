@@ -94,6 +94,9 @@ export const getThreads = async (req, res, next) => {
       include: {
         messages: true,
       },
+    }).catch((err) => {
+      console.warn('[WhatsApp Threads Warning]', err.message);
+      return [];
     });
 
     const parsed = threads.map((t) => ({
