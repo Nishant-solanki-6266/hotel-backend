@@ -76,11 +76,11 @@ export const pmsService = {
 
     // 2. Ensure Hotel record exists in database
     let hotelExists = await prisma.hotel.findUnique({ where: { id: hotelId } });
-    if (!hotelExists) {
+    if (!hotelExists && hotelId === 'hotel-mercier') {
       hotelExists = await prisma.hotel.findFirst();
-      if (!hotelExists) {
-        throw new Error('Associated Hotel record not found in database');
-      }
+    }
+    if (!hotelExists) {
+      throw new Error(`Associated Hotel record '${hotelId}' not found in database`);
     }
 
     const targetHotelId = hotelExists.id;
@@ -127,7 +127,7 @@ export const pmsService = {
     }
 
     let hotelExists = await prisma.hotel.findUnique({ where: { id: hotelId } });
-    if (!hotelExists) {
+    if (!hotelExists && hotelId === 'hotel-mercier') {
       hotelExists = await prisma.hotel.findFirst();
     }
 
@@ -175,12 +175,12 @@ export const pmsService = {
     }
 
     let hotelExists = await prisma.hotel.findUnique({ where: { id: hotelId } });
-    if (!hotelExists) {
+    if (!hotelExists && hotelId === 'hotel-mercier') {
       hotelExists = await prisma.hotel.findFirst();
     }
 
     if (!hotelExists) {
-      throw new Error('Hotel entity not found');
+      throw new Error(`Hotel entity '${hotelId}' not found`);
     }
 
     const targetHotelId = hotelExists.id;
