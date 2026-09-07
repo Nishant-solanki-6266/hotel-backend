@@ -1,5 +1,11 @@
 import { Router } from 'express';
-import { connectPmsController, getPmsStatusController, syncPmsController, checkAvailabilityController } from './pmsController.js';
+import {
+  connectPmsController,
+  getPmsStatusController,
+  syncPmsController,
+  checkAvailabilityController,
+  mewsWebhookController,
+} from './pmsController.js';
 import { authenticate } from '../../middlewares/auth.js';
 
 const router = Router();
@@ -21,9 +27,14 @@ const resolveHotelContext = (req, res, next) => {
   return res.status(401).json({ success: false, message: 'Authentication required. Missing or invalid Bearer token.', data: null });
 };
 
+// Authenticated/Context PMS management endpoints
 router.post('/connect', resolveHotelContext, connectPmsController);
 router.get('/status', resolveHotelContext, getPmsStatusController);
 router.post('/sync', resolveHotelContext, syncPmsController);
 router.get('/availability', checkAvailabilityController);
+
+// Public Mews Webhook Receiver (validated via payload/headers inside controller)
+router.post('/webhook', mewsWebhookController);
+router.post('/webhook/mews', mewsWebhookController);
 
 export default router;

@@ -1,11 +1,17 @@
 import { prisma } from '../../config/database.js';
 import { MewsClient } from './mewsClient.js';
+import { realtimeService } from '../../services/realtimeService.js';
 
 function mapMewsReservationState(state) {
   switch (state) {
     case 'Processed':
+    case 'In House':
+    case 'Started':
+    case 'CheckedIn':
       return 'In House';
     case 'Canceled':
+    case 'Checked Out':
+    case 'Ended':
       return 'Checked Out';
     case 'Confirmed':
     default:
@@ -426,5 +432,216 @@ export const pmsService = {
       spaceId: room.mewsId,
       status: mewsStatus,
     });
+  },
+
+  /**
+   * Process incoming Mews Webhook event, update DB, and broadcast live via SSE
+   */
+  async handleMewsWebhook(hotelId, payload) {
+    let hotelExists = await prisma.hotel.findUnique({ where: { id: hotelId || 'hotel-mercier' } });
+    if (!hotelExists && (hotelId === 'hotel-mercier' || !hotelId)) {
+      hotelExists = await prisma.hotel.findFirst();
+    }
+    const targetHotelId = hotelExists?.id || 'hotel-mercier';
+    const hotelName = hotelExists?.name || 'Hotel Mercier';
+
+    const eventsToProcess = [];
+
+    // Support Mews standard batch format { Events: [...] } or direct flat event payload
+    if (payload?.Events && Array.isArray(payload.Events)) {
+      for (const ev of payload.Events) {
+        eventsToProcess.push({
+          type: ev.Type || ev.Discriminator,
+          data: ev.Value || ev,
+        });
+      }
+    } else {
+      eventsToProcess.push({
+        type: payload?.event || payload?.type || 'ReservationUpdate',
+        data: payload?.data || payload || {},
+      });
+    }
+
+    const processedResults = [];
+
+    for (const item of eventsToProcess) {
+      const type = item.type || '';
+      const data = item.data || {};
+      const timeStr = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+
+      const isRoomStateEvent =
+        type.includes('Resource') ||
+        type.includes('Space') ||
+        Boolean(data.roomStatus) ||
+        (data.status && ['Dirty', 'Clean', 'Inspected', 'OutOfService'].includes(data.status) && !data.reservationId && !data.customerName);
+
+      // 1. Resource / Room State Updates (Clean / Dirty / Inspected / OutOfService)
+      if (isRoomStateEvent) {
+        const roomNum = data.roomNumber ? String(data.roomNumber) : null;
+        const rawStatus = data.status || data.roomStatus || 'Clean';
+        const mappedRoomStatus = mapMewsRoomState(rawStatus);
+
+        if (roomNum) {
+          await prisma.room.updateMany({
+            where: { number: roomNum },
+            data: { status: mappedRoomStatus, updatedAt: timeStr },
+          }).catch(() => {});
+
+          const actId = `act-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+          const actText = `Room ${roomNum} status updated to ${mappedRoomStatus} via Mews PMS`;
+          await prisma.activityItem.create({
+            data: {
+              id: actId,
+              hotelId: targetHotelId,
+              at: timeStr,
+              kind: 'room',
+              text: actText,
+              meta: 'Mews PMS Live Webhook',
+            },
+          }).catch(() => {});
+
+          realtimeService.broadcastToHotel(targetHotelId, 'pms:room_updated', {
+            roomNumber: roomNum,
+            status: mappedRoomStatus,
+            time: timeStr,
+          });
+
+          realtimeService.broadcastToHotel(targetHotelId, 'activity:new', {
+            id: actId,
+            at: timeStr,
+            kind: 'room',
+            text: actText,
+            meta: 'Mews PMS Live Webhook',
+          });
+
+          processedResults.push({ event: type, status: 'processed', roomNumber: roomNum, roomStatus: mappedRoomStatus });
+        }
+      }
+      // 2. Reservation Events (Check-in, Check-out, Created, Updated)
+      else if (type.includes('Reservation') || data.reservationId || data.customerId || type === 'CheckIn' || type === 'CheckOut' || data.customerName) {
+        const resNumber = String(data.reservationId || data.number || data.id || `res_${Date.now()}`);
+        const roomNum = data.roomNumber ? String(data.roomNumber) : null;
+        const guestName = data.customerName || data.guestName || 'Guest';
+        const rawState = data.status || data.state || 'Confirmed';
+        const mappedStatus = mapMewsReservationState(rawState);
+        const guestId = data.customerId || data.guestId || `gst_${resNumber}`;
+
+        const isCheckIn = mappedStatus === 'In House' || rawState === 'Processed' || type === 'CheckIn';
+        const isCheckOut = mappedStatus === 'Checked Out' || rawState === 'Canceled' || type === 'CheckOut';
+
+        // 1. Upsert Guest record
+        await prisma.guest.upsert({
+          where: { id: guestId },
+          update: {
+            name: guestName,
+            room: isCheckOut ? null : roomNum,
+            hotelId: targetHotelId,
+          },
+          create: {
+            id: guestId,
+            name: guestName,
+            room: isCheckOut ? null : roomNum,
+            hotelId: targetHotelId,
+            country: 'BE',
+            language: 'en',
+          },
+        }).catch(() => {});
+
+        // 2. Upsert Reservation record
+        const arrivalDate = data.arrival || data.startUtc ? new Date(data.arrival || data.startUtc).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
+        const departureDate = data.departure || data.endUtc ? new Date(data.departure || data.endUtc).toISOString().split('T')[0] : new Date(Date.now() + 86400000).toISOString().split('T')[0];
+
+        await prisma.reservation.upsert({
+          where: { number: resNumber },
+          update: {
+            hotelId: targetHotelId,
+            guestId,
+            status: mappedStatus,
+            arrival: arrivalDate,
+            departure: departureDate,
+            roomType: data.roomType || 'Deluxe Courtyard',
+          },
+          create: {
+            number: resNumber,
+            hotelId: targetHotelId,
+            guestId,
+            status: mappedStatus,
+            arrival: arrivalDate,
+            departure: departureDate,
+            nights: data.nights || 1,
+            adults: data.adults || 1,
+            children: data.children || 0,
+            roomType: data.roomType || 'Deluxe Courtyard',
+            rate: data.rate || '€160 / night',
+          },
+        }).catch(() => {});
+
+        // 3. If check-in or room assignment, update Room
+        if (roomNum) {
+          const roomUpdate = { updatedAt: timeStr };
+          if (isCheckIn) {
+            roomUpdate.guestStatus = 'Occupied';
+          } else if (isCheckOut) {
+            roomUpdate.guestStatus = 'Vacant';
+            roomUpdate.status = 'Dirty';
+          }
+
+          if (Object.keys(roomUpdate).length > 0) {
+            await prisma.room.updateMany({
+              where: { number: roomNum },
+              data: roomUpdate,
+            }).catch(() => {});
+          }
+
+          // Create Activity Item
+          const actText = isCheckIn
+            ? `Guest ${guestName} checked in to Room ${roomNum} via Mews PMS`
+            : isCheckOut
+            ? `Guest ${guestName} checked out of Room ${roomNum} via Mews PMS. Room set to Dirty.`
+            : `Reservation updated for Room ${roomNum} (${guestName}) via Mews PMS`;
+
+          const actId = `act-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+          await prisma.activityItem.create({
+            data: {
+              id: actId,
+              hotelId: targetHotelId,
+              at: timeStr,
+              kind: 'room',
+              text: actText,
+              meta: 'Mews PMS Live Webhook',
+            },
+          }).catch(() => {});
+
+          // Broadcast Realtime SSE Event
+          realtimeService.broadcastToHotel(targetHotelId, 'pms:reservation_updated', {
+            reservationId: resNumber,
+            roomNumber: roomNum,
+            guestName,
+            status: mappedStatus,
+            isCheckIn,
+            isCheckOut,
+            time: timeStr,
+          });
+
+          realtimeService.broadcastToHotel(targetHotelId, 'activity:new', {
+            id: actId,
+            at: timeStr,
+            kind: 'room',
+            text: actText,
+            meta: 'Mews PMS Live Webhook',
+          });
+        }
+
+        processedResults.push({ event: type, status: 'processed', reservationId: resNumber, roomNumber: roomNum });
+      }
+    }
+
+    return {
+      success: true,
+      hotelId: targetHotelId,
+      hotelName,
+      processedCount: processedResults.length,
+      results: processedResults,
+    };
   },
 };
