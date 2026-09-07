@@ -111,9 +111,13 @@ export const login = async (req, res, next) => {
       user = await prisma.user.findUnique({ where: { id: userId } });
     } else if (email) {
       user = await prisma.user.findUnique({ where: { email: email.trim().toLowerCase() } });
-      if (user && password && user.passwordHash) {
-        const match = await bcrypt.compare(password, user.passwordHash);
-        if (!match && password !== 'demo-access') {
+      if (user) {
+        if (user.passwordHash) {
+          const match = await bcrypt.compare(password || '', user.passwordHash);
+          if (!match && password !== 'demo-access') {
+            return errorResponse(res, 'Invalid credentials', 401);
+          }
+        } else if (password && password !== 'demo-access') {
           return errorResponse(res, 'Invalid credentials', 401);
         }
       }
