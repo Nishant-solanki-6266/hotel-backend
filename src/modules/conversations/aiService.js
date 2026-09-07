@@ -59,7 +59,7 @@ function getDueTime(minutesToAdd = 20) {
 /**
  * Extract room number from message or reservation context
  */
-function extractRoomNumber(messageText, conversation, guest) {
+export function extractRoomNumber(messageText = '', conversation = null, guest = null) {
   const match = messageText.match(/room\s*#?\s*(\d{2,4})/i) || messageText.match(/\b(\d{3,4})\b/);
   if (match?.[1]) {
     return match[1];

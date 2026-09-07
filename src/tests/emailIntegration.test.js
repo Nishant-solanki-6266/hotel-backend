@@ -183,4 +183,82 @@ describe('Guest Email Integration Test Suite (Step 3)', () => {
     assert.equal(lastMsg.channel, 'email');
     assert.ok(lastMsg.body.includes('Your room will be prioritized'));
   });
+
+  test('4. POST /api/email/inbound generates intelligent Wi-Fi reply from Knowledge Base', async () => {
+    const wifiPayload = {
+      hotelId,
+      from: 'Yashvant Sharma <yashvant@gmail.com>',
+      to: 'reception@grandhorizon.be',
+      subject: 'Wi-Fi Information',
+      text: 'Hello, I want to on wifi.',
+    };
+
+    const res = await fetch(`${baseUrl}/email/inbound`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(wifiPayload),
+    });
+
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    assert.equal(json.success, true);
+    assert.ok(json.data.conversationId);
+
+    // Verify conversation suggestedReply contains Wi-Fi details
+    const conversation = await prisma.conversation.findUnique({
+      where: { id: json.data.conversationId },
+    });
+    assert.ok(conversation);
+    assert.ok(
+      conversation.suggestedReply.toLowerCase().includes('wi-fi') ||
+      conversation.suggestedReply.toLowerCase().includes('wifi') ||
+      conversation.suggestedReply.toLowerCase().includes('network')
+    );
+  });
+
+  test('5. POST /api/email/inbound automatically creates Housekeeping Task for towel requests', async () => {
+    const towelPayload = {
+      hotelId,
+      from: 'Elena Rostova <elena.rostova@example.com>',
+      to: 'reception@grandhorizon.be',
+      subject: 'Extra towels for Room 302',
+      text: 'Good afternoon, could we please have 2 extra bath towels brought to Room 302?',
+    };
+
+    const res = await fetch(`${baseUrl}/email/inbound`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(towelPayload),
+    });
+
+    assert.equal(res.status, 200);
+    const json = await res.json();
+    assert.equal(json.success, true);
+
+    // Verify Housekeeping Task created in MySQL
+    const task = await prisma.task.findFirst({
+      where: {
+        hotelId,
+        department: 'Housekeeping',
+        room: '302',
+      },
+    });
+    assert.ok(task);
+    assert.ok(task.title.toLowerCase().includes('towel'));
+
+    // Verify Guest room is populated
+    const guest = await prisma.guest.findUnique({
+      where: { id: json.data.guestId },
+    });
+    assert.ok(guest);
+    assert.equal(guest.room, '302');
+
+    // Verify PMS Reservation is linked
+    const reservation = await prisma.reservation.findFirst({
+      where: { guestId: json.data.guestId },
+    });
+    assert.ok(reservation);
+    assert.equal(reservation.number, 'RES-302');
+    assert.equal(reservation.status, 'In House');
+  });
 });

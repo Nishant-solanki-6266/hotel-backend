@@ -145,10 +145,15 @@ export const emailService = {
     const targetHotelId = hotel?.id || 'hotel-mercier';
     const timeStr = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 
-    // 1. Locate or create guest deterministically by email
+    // 1. Reuse extractRoomNumber to dynamically extract room from email subject / body
+    const { extractRoomNumber, processGuestMessageAI } = await import('../conversations/aiService.js');
+    const detectedRoom = extractRoomNumber(`${subject} ${textBody}`);
+
+    // 2. Locate or create guest deterministically by email
     const guestId = `gst_em_${fromEmail.toLowerCase().replace(/[^a-zA-Z0-9]/g, '_')}`;
     let guest = await prisma.guest.findUnique({
       where: { id: guestId },
+      include: { reservations: true },
     });
 
     if (!guest) {
@@ -157,16 +162,75 @@ export const emailService = {
           id: guestId,
           hotelId: targetHotelId,
           name: fromName,
+          room: detectedRoom || null,
           country: 'BE',
           language: 'en',
           vip: false,
           previousStays: 0,
           tags: JSON.stringify(['Email Contact', fromEmail]),
         },
+        include: { reservations: true },
+      });
+    } else if (detectedRoom && guest.room !== detectedRoom) {
+      guest = await prisma.guest.update({
+        where: { id: guest.id },
+        data: { room: detectedRoom },
+        include: { reservations: true },
       });
     }
 
-    // 2. Find active conversation or create a new one
+    // 3. Dynamically link or create PMS Reservation for Guest
+    let reservation = guest.reservations?.[0] || null;
+    const roomNum = detectedRoom || guest.room;
+
+    if (!reservation) {
+      if (roomNum) {
+        const resNumber = `RES-${roomNum}`;
+        reservation = await prisma.reservation.upsert({
+          where: { number: resNumber },
+          create: {
+            number: resNumber,
+            hotelId: targetHotelId,
+            guestId: guest.id,
+            arrival: 'Today',
+            departure: '+2 Days',
+            nights: 2,
+            adults: 2,
+            children: 0,
+            roomType: 'Deluxe Courtyard',
+            status: 'In House',
+            rate: '€180/night',
+          },
+          update: {
+            guestId: guest.id,
+            status: 'In House',
+          },
+        });
+      } else {
+        const resNumber = `ENQ-${guest.id.slice(-4).toUpperCase()}`;
+        reservation = await prisma.reservation.upsert({
+          where: { number: resNumber },
+          create: {
+            number: resNumber,
+            hotelId: targetHotelId,
+            guestId: guest.id,
+            arrival: 'Pending',
+            departure: 'Pending',
+            nights: 1,
+            adults: 1,
+            children: 0,
+            roomType: 'Standard Room',
+            status: 'Enquiry',
+            rate: '€0',
+          },
+          update: {
+            guestId: guest.id,
+          },
+        });
+      }
+    }
+
+    // 4. Find active conversation or create a new one
     let conversation = await prisma.conversation.findFirst({
       where: {
         guestId: guest.id,
@@ -174,15 +238,17 @@ export const emailService = {
       },
     });
 
+    const convStage = roomNum ? 'In House' : 'Pre-arrival';
+
     if (!conversation) {
       const convId = `c-em-${Date.now()}`;
       conversation = await prisma.conversation.create({
         data: {
           id: convId,
           guestId: guest.id,
-          stage: 'Enquiry',
+          stage: convStage,
           primaryChannel: 'email',
-          aiStatus: 'Suggested',
+          aiStatus: 'ai-handling',
           sentiment: 'neutral',
           subject: subject.slice(0, 100),
           summary: `Guest email received from ${fromEmail}: "${textBody.slice(0, 80)}"`,
@@ -196,15 +262,15 @@ export const emailService = {
       await prisma.conversation.update({
         where: { id: conversation.id },
         data: {
+          stage: convStage,
           unread: { increment: 1 },
           lastAt: timeStr,
-          aiStatus: 'Suggested',
-          suggestedReply: `Dear ${guest.name},\n\nThank you for following up. Regarding your email about "${subject}", we will take care of this immediately.\n\nWarm regards,\nFront Desk`,
+          aiStatus: 'ai-handling',
         },
       });
     }
 
-    // 3. Append message to conversation
+    // 5. Append message to conversation
     const msgId = `m-${Date.now()}`;
     const messageRecord = await prisma.message.create({
       data: {
@@ -217,7 +283,43 @@ export const emailService = {
       },
     });
 
-    // 4. Log Activity Item
+    // 6. Trigger Universal Hotel AI Knowledge & Action Engine
+    let aiResult = null;
+    try {
+      aiResult = await processGuestMessageAI({
+        messageText: textBody,
+        conversationId: conversation.id,
+        hotelId: targetHotelId,
+        channel: 'email',
+      });
+    } catch (aiErr) {
+      console.warn('[AI Processing Error]:', aiErr.message);
+    }
+
+    const aiSuggestedReply = aiResult?.replyText || `Dear ${guest.name},\n\nThank you for contacting us. We have received your inquiry regarding "${subject}" and are delighted to assist you.\n\nWarm regards,\nFront Desk Team`;
+    const knowledgeUsed = aiResult?.knowledgeUsed || (aiResult?.type === 'knowledge_rag' ? ['Hotel Policies & Knowledge'] : []);
+
+    let currentTaskIds = [];
+    try {
+      currentTaskIds = JSON.parse(conversation.taskIds || '[]');
+    } catch (_) {}
+    if (aiResult?.task?.id && !currentTaskIds.includes(aiResult.task.id)) {
+      currentTaskIds.push(aiResult.task.id);
+    }
+
+    // Update conversation with dynamic AI reply and metadata
+    await prisma.conversation.update({
+      where: { id: conversation.id },
+      data: {
+        suggestedReply: aiSuggestedReply,
+        aiStatus: 'ai-handling',
+        knowledgeUsed: JSON.stringify(knowledgeUsed),
+        taskIds: JSON.stringify(currentTaskIds),
+        lastAt: timeStr,
+      },
+    });
+
+    // 7. Log Activity Item
     const actId = `act-${Date.now()}`;
     const actText = `New guest email from ${guest.name} (${fromEmail}): "${subject}"`;
     await prisma.activityItem.create({
@@ -231,7 +333,56 @@ export const emailService = {
       },
     }).catch(() => {});
 
-    // 5. Broadcast Realtime SSE Events
+    // 8. Construct normalized Conversation object for realtime UI rendering
+    const fullConversation = {
+      id: conversation.id,
+      stage: convStage === 'In House' ? 'in-house' : 'pre-arrival',
+      channels: ['email'],
+      primaryChannel: 'email',
+      aiStatus: 'ai-handling',
+      sentiment: 'neutral',
+      subject,
+      summary: `"${textBody.slice(0, 100)}"`,
+      suggestedReply: aiSuggestedReply,
+      knowledgeUsed,
+      upsellIdeas: [],
+      taskIds: currentTaskIds,
+      unread: conversation.unread || 1,
+      lastAt: timeStr,
+      aiHandledCount: 0,
+      guest: {
+        id: guest.id,
+        name: guest.name,
+        room: roomNum || undefined,
+        country: guest.country || 'BE',
+        language: guest.language || 'en',
+        vip: guest.vip || false,
+        previousStays: guest.previousStays || 0,
+        tags: ['Email Contact', fromEmail],
+        reservation: {
+          number: reservation.number,
+          arrival: reservation.arrival,
+          departure: reservation.departure,
+          nights: reservation.nights,
+          adults: reservation.adults,
+          children: reservation.children,
+          roomType: reservation.roomType,
+          status: reservation.status,
+          rate: reservation.rate,
+        },
+      },
+      messages: [
+        {
+          id: messageRecord.id,
+          author: 'guest',
+          channel: 'email',
+          body: textBody,
+          at: timeStr,
+        },
+      ],
+    };
+
+    // 9. Broadcast Realtime SSE Events
     realtimeService.broadcastToHotel(targetHotelId, 'conversation:updated', {
       conversationId: conversation.id,
       guestId: guest.id,
@@ -240,6 +391,7 @@ export const emailService = {
       subject,
       lastMessage: textBody.slice(0, 120),
       time: timeStr,
+      conversation: fullConversation,
     });
 
     realtimeService.broadcastToHotel(targetHotelId, 'activity:new', {
@@ -258,6 +410,9 @@ export const emailService = {
       fromEmail,
       subject,
       time: timeStr,
+      suggestedReply: aiSuggestedReply,
+      task: aiResult?.task || null,
+      conversation: fullConversation,
     };
   },
 
