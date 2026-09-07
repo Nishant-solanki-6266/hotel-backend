@@ -1,5 +1,6 @@
 import { prisma } from '../../config/database.js';
 import { errorResponse, successResponse } from '../../utils/response.js';
+import { pmsService } from '../pms/pmsService.js';
 
 /**
  * Helper: Sanitize phone numbers to pure E.164 digits without +, -, or spaces
@@ -158,6 +159,9 @@ export const handleAction = async (req, res, next) => {
             where: { room: roomNum, hotelId, department: 'Housekeeping', status: { not: 'Completed' } },
             data: { status: 'Completed' },
           });
+
+          // Sync room status back to Mews space in background
+          pmsService.syncRoomStatusToMews(hotelId, roomNum, 'Clean').catch(() => {});
         } else if (label === 'Start Cleaning' || label?.toLowerCase().includes('start cleaning')) {
           await prisma.room.updateMany({
             where: { number: roomNum, hotelId },
@@ -168,6 +172,9 @@ export const handleAction = async (req, res, next) => {
             where: { number: roomNum, hotelId },
             data: { status: 'Maintenance', note: `Issue reported via WhatsApp by ${staffName || 'Housekeeping'}` },
           });
+
+          // Sync room status back to Mews space in background
+          pmsService.syncRoomStatusToMews(hotelId, roomNum, 'Maintenance').catch(() => {});
 
           const issueId = `MT-${Date.now().toString().slice(-4)}`;
           await prisma.issue.create({
