@@ -52,3 +52,18 @@ export const syncPmsController = async (req, res) => {
     return errorResponse(res, error.message, 500);
   }
 };
+
+/**
+ * Controller querying live availability and starting rates
+ * Endpoint: GET /api/pms/availability
+ */
+export const checkAvailabilityController = async (req, res) => {
+  try {
+    const hotelId = req.user?.hotelId || req.query.hotelId || 'hotel-mercier';
+    const { checkIn, checkOut } = req.query;
+    const availability = await pmsService.checkAvailability(hotelId, { checkIn, checkOut });
+    return successResponse(res, availability, 'Availability fetched successfully');
+  } catch (error) {
+    return errorResponse(res, error.message, 500);
+  }
+};

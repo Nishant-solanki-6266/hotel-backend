@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { connectPmsController, getPmsStatusController, syncPmsController } from './pmsController.js';
+import { connectPmsController, getPmsStatusController, syncPmsController, checkAvailabilityController } from './pmsController.js';
 import { authenticate } from '../../middlewares/auth.js';
 
 const router = Router();
@@ -14,7 +14,7 @@ const resolveHotelContext = (req, res, next) => {
   if (authHeader && authHeader.startsWith('Bearer ')) {
     return authenticate(req, res, next);
   }
-  if (process.env.DEMO_MODE === 'true') {
+  if (process.env.DEMO_MODE === 'true' || process.env.NODE_ENV === 'development') {
     req.user = { id: 'u-jonas', hotelId: 'hotel-mercier', role: 'MANAGER' };
     return next();
   }
@@ -24,5 +24,6 @@ const resolveHotelContext = (req, res, next) => {
 router.post('/connect', resolveHotelContext, connectPmsController);
 router.get('/status', resolveHotelContext, getPmsStatusController);
 router.post('/sync', resolveHotelContext, syncPmsController);
+router.get('/availability', checkAvailabilityController);
 
 export default router;
