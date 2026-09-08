@@ -22,8 +22,8 @@ export const sendMetaWhatsAppMessage = async (toPhone, text, buttons = []) => {
     return { success: false, reason: 'Invalid phone number' };
   }
 
-  const token = process.env.META_ACCESS_TOKEN;
-  const phoneId = process.env.META_PHONE_NUMBER_ID;
+  const token = process.env.WHATSAPP_TOKEN || process.env.META_ACCESS_TOKEN;
+  const phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID || process.env.META_PHONE_NUMBER_ID;
 
   // Graceful Fallback if live credentials are not set in environment
   if (!token || !phoneId) {
@@ -283,7 +283,7 @@ export const verifyWebhook = (req, res) => {
     const token = req.query['hub.verify_token'];
     const challenge = req.query['hub.challenge'];
 
-    const expectedToken = process.env.META_WEBHOOK_VERIFY_TOKEN || 'hotelogx_secret_token';
+    const expectedToken = process.env.VERIFY_TOKEN || process.env.META_WEBHOOK_VERIFY_TOKEN || 'hotelogxcom2606';
 
     if (mode === 'subscribe' && token === expectedToken) {
       console.log('[WhatsApp Webhook] Verification successful');

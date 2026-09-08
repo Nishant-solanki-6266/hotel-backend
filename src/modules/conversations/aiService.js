@@ -159,59 +159,99 @@ export async function retrieveRelevantKnowledge(hotelId, queryText) {
 }
 
 /**
- * Generate intelligent hotel reply using Google Gemini API with fallback models
+ * Generate intelligent hotel reply using OpenAI API or Google Gemini API
  */
 export async function generateWithGemini({ prompt, systemInstruction = '' }) {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return null;
+  // 1. Try OpenAI if OPENAI_API_KEY is configured
+  const openAiKey = process.env.OPENAI_API_KEY || (process.env.GEMINI_API_KEY?.startsWith('sk-') ? process.env.GEMINI_API_KEY : null);
+  if (openAiKey) {
+    const openAiModels = ['gpt-4o-mini', 'gpt-4o', 'gpt-3.5-turbo'];
+    for (const model of openAiModels) {
+      try {
+        const messages = [];
+        if (systemInstruction) {
+          messages.push({ role: 'system', content: systemInstruction });
+        }
+        messages.push({ role: 'user', content: prompt });
 
-  const models = [
-    process.env.GEMINI_MODEL || 'gemini-3.6-flash',
-    'gemini-3.5-flash',
-    'gemini-flash-latest',
-    'gemini-2.5-flash',
-  ];
-
-  for (const model of models) {
-    try {
-      const payload = {
-        contents: [
-          {
-            role: 'user',
-            parts: [{ text: prompt }],
-          },
-        ],
-      };
-
-      if (systemInstruction) {
-        payload.systemInstruction = {
-          parts: [{ text: systemInstruction }],
-        };
-      }
-
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-        {
+        const res = await fetch('https://api.openai.com/v1/chat/completions', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        }
-      );
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${openAiKey.trim()}`,
+          },
+          body: JSON.stringify({
+            model,
+            messages,
+            temperature: 0.7,
+            max_tokens: 300,
+          }),
+        });
 
-      if (!res.ok) {
-        // If unauthorized/forbidden, key is invalid; don't loop endlessly
-        if (res.status === 401 || res.status === 403) {
-          console.warn(`[Gemini API] API Key unauthorized (status ${res.status})`);
-          return null;
+        if (res.ok) {
+          const data = await res.json();
+          const reply = data?.choices?.[0]?.message?.content?.trim();
+          if (reply) return reply;
+        } else {
+          const errData = await res.json().catch(() => ({}));
+          console.warn(`[OpenAI API] Error with model ${model}:`, errData?.error?.message || res.statusText);
         }
-        continue;
+      } catch (err) {
+        console.warn(`[OpenAI API] Network error with model ${model}:`, err.message);
       }
+    }
+  }
 
-      const data = await res.json();
-      const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-      if (reply) return reply;
-    } catch (err) {
-      console.warn(`[Gemini API] Error calling model ${model}:`, err.message);
+  // 2. Try Google Gemini if GEMINI_API_KEY is configured (and not an sk- key)
+  const geminiApiKey = process.env.GEMINI_API_KEY?.startsWith('sk-') ? null : process.env.GEMINI_API_KEY;
+  if (geminiApiKey) {
+    const models = [
+      process.env.GEMINI_MODEL || 'gemini-1.5-flash',
+      'gemini-1.5-pro',
+      'gemini-flash-latest',
+      'gemini-2.5-flash',
+    ];
+
+    for (const model of models) {
+      try {
+        const payload = {
+          contents: [
+            {
+              role: 'user',
+              parts: [{ text: prompt }],
+            },
+          ],
+        };
+
+        if (systemInstruction) {
+          payload.systemInstruction = {
+            parts: [{ text: systemInstruction }],
+          };
+        }
+
+        const res = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiApiKey}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          }
+        );
+
+        if (!res.ok) {
+          if (res.status === 401 || res.status === 403) {
+            console.warn(`[Gemini API] API Key unauthorized (status ${res.status})`);
+            break;
+          }
+          continue;
+        }
+
+        const data = await res.json();
+        const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+        if (reply) return reply;
+      } catch (err) {
+        console.warn(`[Gemini API] Error calling model ${model}:`, err.message);
+      }
     }
   }
 

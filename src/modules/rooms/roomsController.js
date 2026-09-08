@@ -157,7 +157,7 @@ export const updateRoomStatus = async (req, res, next) => {
 
     return successResponse(
       res,
-      { room: result.updatedRoom, completedTaskIds: result.completedTaskIds },
+      { ...result.updatedRoom, room: result.updatedRoom, completedTaskIds: result.completedTaskIds },
       `Room ${number} updated to ${status}`,
     );
   } catch (error) {
