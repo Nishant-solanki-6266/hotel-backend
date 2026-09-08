@@ -186,6 +186,7 @@ export async function generateWithGemini({ prompt, systemInstruction = '' }) {
             temperature: 0.7,
             max_tokens: 300,
           }),
+          signal: AbortSignal.timeout(4000),
         });
 
         if (res.ok) {
@@ -195,9 +196,13 @@ export async function generateWithGemini({ prompt, systemInstruction = '' }) {
         } else {
           const errData = await res.json().catch(() => ({}));
           console.warn(`[OpenAI API] Error with model ${model}:`, errData?.error?.message || res.statusText);
+          if (res.status === 401 || res.status === 403 || res.status === 429) {
+            break;
+          }
         }
       } catch (err) {
         console.warn(`[OpenAI API] Network error with model ${model}:`, err.message);
+        break;
       }
     }
   }
@@ -235,12 +240,13 @@ export async function generateWithGemini({ prompt, systemInstruction = '' }) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(4000),
           }
         );
 
         if (!res.ok) {
-          if (res.status === 401 || res.status === 403) {
-            console.warn(`[Gemini API] API Key unauthorized (status ${res.status})`);
+          if (res.status === 401 || res.status === 403 || res.status === 429) {
+            console.warn(`[Gemini API] API Key unauthorized or quota exceeded (status ${res.status})`);
             break;
           }
           continue;
@@ -251,6 +257,7 @@ export async function generateWithGemini({ prompt, systemInstruction = '' }) {
         if (reply) return reply;
       } catch (err) {
         console.warn(`[Gemini API] Error calling model ${model}:`, err.message);
+        break;
       }
     }
   }
@@ -264,7 +271,7 @@ export async function generateWithGemini({ prompt, systemInstruction = '' }) {
 export async function processGuestMessageAI({
   messageText,
   conversationId,
-  hotelId = 'hotel-mercier',
+  hotelId = null,
   channel = 'whatsapp',
 }) {
   if (!messageText || typeof messageText !== 'string') {
@@ -285,13 +292,13 @@ export async function processGuestMessageAI({
 
   const guest = conversation.guest;
   const guestName = guest?.name || 'Guest';
-  const effectiveHotelId = guest?.hotelId || hotelId;
+  const effectiveHotelId = hotelId || guest?.hotelId;
   const room = extractRoomNumber(messageText, conversation, guest) || '208';
   const timeStr = getClockTime();
 
   // 1. Retrieve RAG Knowledge context strictly for this hotel
   const rag = await retrieveRelevantKnowledge(effectiveHotelId, messageText);
-  const hotelName = rag.hotelProfile?.name || 'Hotel Mercier';
+  const hotelName = rag.hotelProfile?.name || 'Hotel Front Desk';
 
   // 2. Check for Housekeeping Intent
   for (const pattern of HOUSEKEEPING_PATTERNS) {
@@ -526,7 +533,8 @@ Write a polite, accurate, concise 1-3 sentence response directly answering their
     } else if (lower.includes('breakfast')) {
       replyText = `Breakfast is served daily in our dining room starting at 07:00. We offer a buffet featuring fresh local Belgian pastries, artisanal cheeses, fruit, and hot beverages.`;
     } else if (lower.includes('wifi') || lower.includes('wi-fi') || lower.includes('internet')) {
-      replyText = `High-speed complimentary Wi-Fi is available throughout the hotel. You can connect to 'HotelMercier-Guest' with no password required.`;
+      const wifiName = `${(rag.hotelProfile?.name || 'Hotel').replace(/\s+/g, '')}-Guest`;
+      replyText = `High-speed complimentary Wi-Fi is available throughout the hotel. You can connect to '${wifiName}' with no password required.`;
     } else if (lower.includes('pet') || lower.includes('dog') || lower.includes('cat')) {
       replyText = `Small well-behaved pets are welcome at our property upon advance notice. Please inform the front desk so we can prepare pet amenities for your room.`;
     } else if (rag.chunks.length > 0) {
