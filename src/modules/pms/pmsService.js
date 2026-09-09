@@ -76,7 +76,7 @@ export const pmsService = {
 
     const cleanPropertyId = propertyId.trim();
 
-    // 1. Execute REAL Mews API validation via POST /customers/getAll (Limit: 1)
+    // 1. Execute REAL Mews API validation via MewsClient
     const mewsClient = new MewsClient();
     const enterpriseData = await mewsClient.validateEnterpriseAccess(cleanPropertyId);
 
@@ -89,8 +89,8 @@ export const pmsService = {
       hotelExists = await prisma.hotel.create({
         data: {
           id: hotelId || 'hotel-connected',
-          name: enterpriseData.enterpriseName || 'Mews Demo Property',
-          legalName: `${enterpriseData.enterpriseName || 'Mews Demo Property'} BV`,
+          name: enterpriseData.enterpriseName || 'Mews Connected Hotel',
+          legalName: `${enterpriseData.enterpriseName || 'Mews Connected Hotel'} BV`,
           stars: 4,
           roomsCount: 48,
           address: 'Kloosterstraat 44',
@@ -98,9 +98,9 @@ export const pmsService = {
           city: 'Antwerp',
           country: 'Belgium',
           phone: '+32 3 227 41 09',
-          email: 'reception@mewsdemo.com',
-          website: 'https://mews.com',
-          bookingEngine: 'https://mews.com',
+          email: 'reception@hotelmercier.be',
+          website: 'https://hotelmercier.be',
+          bookingEngine: 'https://hotelmercier.be',
           whatsappNumber: '+32 3 227 41 09',
           vatNumber: 'BE 0842.123.456',
           description: 'Live Mews connected property.',
@@ -122,7 +122,7 @@ export const pmsService = {
       where: { hotelId: targetHotelId },
       update: {
         provider: 'mews',
-        propertyId: enterpriseData.propertyId || '851d178',
+        propertyId: enterpriseData.propertyId,
         accessTokenEncrypted: enterpriseData.accessTokenUsed,
         status: 'connected',
         lastSyncAt: now,
@@ -131,7 +131,7 @@ export const pmsService = {
       create: {
         hotelId: targetHotelId,
         provider: 'mews',
-        propertyId: enterpriseData.propertyId || '851d178',
+        propertyId: enterpriseData.propertyId,
         accessTokenEncrypted: enterpriseData.accessTokenUsed,
         status: 'connected',
         lastSyncAt: now,
@@ -160,10 +160,53 @@ export const pmsService = {
       status: 'connected',
       pmsType: 'mews',
       provider: 'mews',
-      propertyId: enterpriseData.propertyId || '851d178',
-      propertyName: enterpriseData.enterpriseName || 'Mews Demo Property',
+      propertyId: enterpriseData.propertyId,
+      propertyName: enterpriseData.enterpriseName,
       lastSyncAt: integration.lastSyncAt ? integration.lastSyncAt.toISOString() : now.toISOString(),
     };
+  },
+
+  /**
+   * Disconnect PMS integration for a specific hotel/tenant
+   */
+  async disconnectPms(hotelId) {
+    if (!hotelId) {
+      throw new Error('Hotel ID is required');
+    }
+
+    let hotelExists = await prisma.hotel.findUnique({ where: { id: hotelId } });
+    if (!hotelExists && hotelId === 'hotel-mercier') {
+      hotelExists = await prisma.hotel.findFirst();
+    }
+
+    const targetHotelId = hotelExists?.id || hotelId;
+
+    await prisma.pmsIntegration.updateMany({
+      where: { hotelId: targetHotelId },
+      data: {
+        status: 'not-started',
+        accessTokenEncrypted: null,
+        propertyId: '',
+        lastError: null,
+      },
+    });
+
+    try {
+      const currentHotel = await prisma.hotel.findUnique({ where: { id: targetHotelId } });
+      let steps = [];
+      try {
+        steps = JSON.parse(currentHotel?.onboardingSteps || '[]');
+      } catch {
+        steps = [];
+      }
+      steps = steps.filter((s) => s !== 'pms');
+      await prisma.hotel.update({
+        where: { id: targetHotelId },
+        data: { onboardingSteps: JSON.stringify(steps) },
+      });
+    } catch {}
+
+    return { success: true, message: 'PMS disconnected successfully' };
   },
 
   /**
