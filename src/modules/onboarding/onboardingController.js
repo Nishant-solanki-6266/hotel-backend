@@ -56,7 +56,7 @@ export const getOnboardingStatus = async (req, res, next) => {
     const hotelId = req.user?.hotelId || 'hotel-mercier';
 
     let hotel = await prisma.hotel.findUnique({ where: { id: hotelId } });
-    if (!hotel && hotelId === 'hotel-mercier') {
+    if (!hotel && !req.user?.hotelId && hotelId === 'hotel-mercier') {
       hotel = await prisma.hotel.findFirst();
     }
 
@@ -159,7 +159,7 @@ export const saveHotelProfile = async (req, res, next) => {
     }
 
     let hotel = await prisma.hotel.findUnique({ where: { id: hotelId } });
-    if (!hotel && hotelId === 'hotel-mercier') {
+    if (!hotel && !req.user?.hotelId && hotelId === 'hotel-mercier') {
       hotel = await prisma.hotel.findFirst();
     }
 
