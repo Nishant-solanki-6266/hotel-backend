@@ -277,51 +277,66 @@ export const pmsService = {
       let roomsSynced = 0;
 
       // 3. Process and Upsert Guests into MySQL Guest table
-      const guestChunks = chunkArray(mewsCustomers, 8);
-      for (const chunk of guestChunks) {
-        await Promise.all(
-          chunk.map(async (cust) => {
-            if (!cust.Id) return;
-            const fullName = `${cust.FirstName || ''} ${cust.LastName || ''}`.trim() || 'Guest';
-            await prisma.guest.upsert({
-              where: { id: cust.Id },
-              update: {
-                mewsId: cust.Id,
-                hotelId: targetHotelId,
-                name: fullName,
-                country: cust.Address?.CountryCode || cust.NationalityCode || 'BE',
-                language: cust.LanguageCode || 'en-US',
-                vip: Boolean(cust.Classifications?.includes('VIP')),
-                previousStays: cust.ChainStayCount || 0,
-              },
-              create: {
-                id: cust.Id,
-                mewsId: cust.Id,
-                hotelId: targetHotelId,
-                name: fullName,
-                country: cust.Address?.CountryCode || cust.NationalityCode || 'BE',
-                language: cust.LanguageCode || 'en-US',
-                vip: Boolean(cust.Classifications?.includes('VIP')),
-                previousStays: cust.ChainStayCount || 0,
-                tags: JSON.stringify(cust.Classifications || []),
-              },
-            });
-            guestsSynced++;
-          })
-        );
+      // Deduplicate customers by Id to prevent duplicate primary key collisions
+      const uniqueCustomerMap = new Map();
+      for (const cust of (mewsCustomers || [])) {
+        if (cust?.Id && !uniqueCustomerMap.has(cust.Id)) {
+          uniqueCustomerMap.set(cust.Id, cust);
+        }
+      }
+
+      for (const cust of uniqueCustomerMap.values()) {
+        try {
+          const fullName = `${cust.FirstName || ''} ${cust.LastName || ''}`.trim() || 'Guest';
+          await prisma.guest.upsert({
+            where: { id: cust.Id },
+            update: {
+              mewsId: cust.Id,
+              hotelId: targetHotelId,
+              name: fullName,
+              country: cust.Address?.CountryCode || cust.NationalityCode || 'BE',
+              language: cust.LanguageCode || 'en-US',
+              vip: Boolean(cust.Classifications?.includes('VIP')),
+              previousStays: cust.ChainStayCount || 0,
+            },
+            create: {
+              id: cust.Id,
+              mewsId: cust.Id,
+              hotelId: targetHotelId,
+              name: fullName,
+              country: cust.Address?.CountryCode || cust.NationalityCode || 'BE',
+              language: cust.LanguageCode || 'en-US',
+              vip: Boolean(cust.Classifications?.includes('VIP')),
+              previousStays: cust.ChainStayCount || 0,
+              tags: JSON.stringify(cust.Classifications || []),
+            },
+          });
+          guestsSynced++;
+        } catch (guestErr) {
+          console.warn(`[PmsSync] Warning upserting guest ${cust.Id}:`, guestErr.message);
+        }
       }
 
       // 4. Process and Upsert Reservations into MySQL Reservation table
-      const reservationChunks = chunkArray(mewsReservations, 8);
-      for (const chunk of reservationChunks) {
-        await Promise.all(
-          chunk.map(async (res) => {
-            if (!res.Id) return;
-            const customerId = res.CustomerId || `cust-${res.Id}`;
-            const resNumber = res.Number || res.Id;
-            const nights = calculateNights(res.StartUtc, res.EndUtc);
+      // Deduplicate reservations by unique reservation number/id
+      const uniqueReservationMap = new Map();
+      for (const res of (mewsReservations || [])) {
+        if (res?.Id) {
+          const resKey = String(res.Number || res.Id);
+          if (!uniqueReservationMap.has(resKey)) {
+            uniqueReservationMap.set(resKey, res);
+          }
+        }
+      }
 
-            // Ensure foreign key parent Guest exists in database using idempotent upsert
+      for (const res of uniqueReservationMap.values()) {
+        try {
+          const customerId = res.CustomerId || `cust-${res.Id}`;
+          const resNumber = String(res.Number || res.Id);
+          const nights = calculateNights(res.StartUtc, res.EndUtc);
+
+          // Ensure foreign key parent Guest exists before inserting reservation
+          if (!uniqueCustomerMap.has(customerId)) {
             await prisma.guest.upsert({
               where: { id: customerId },
               update: {},
@@ -337,75 +352,82 @@ export const pmsService = {
                 tags: '[]',
               },
             }).catch(() => {});
+          }
 
-            await prisma.reservation.upsert({
-              where: { number: String(resNumber) },
-              update: {
-                mewsId: res.Id,
-                hotelId: targetHotelId,
-                guestId: customerId,
-                arrival: res.StartUtc ? new Date(res.StartUtc).toISOString().slice(11, 16) : '15:00',
-                departure: res.EndUtc ? new Date(res.EndUtc).toISOString().slice(11, 16) : '11:00',
-                nights,
-                adults: res.AdultCount || 1,
-                children: res.ChildCount || 0,
-                roomType: res.ResourceCategoryId || 'Deluxe Room',
-                status: mapMewsReservationState(res.State),
-                rate: res.Rate?.Amount ? `€${res.Rate.Amount}/night` : '€150/night',
-              },
-              create: {
-                number: String(resNumber),
-                mewsId: res.Id,
-                hotelId: targetHotelId,
-                guestId: customerId,
-                arrival: res.StartUtc ? new Date(res.StartUtc).toISOString().slice(11, 16) : '15:00',
-                departure: res.EndUtc ? new Date(res.EndUtc).toISOString().slice(11, 16) : '11:00',
-                nights,
-                adults: res.AdultCount || 1,
-                children: res.ChildCount || 0,
-                roomType: res.ResourceCategoryId || 'Deluxe Room',
-                status: mapMewsReservationState(res.State),
-                rate: res.Rate?.Amount ? `€${res.Rate.Amount}/night` : '€150/night',
-              },
-            });
-            reservationsSynced++;
-          })
-        );
+          await prisma.reservation.upsert({
+            where: { number: resNumber },
+            update: {
+              mewsId: res.Id,
+              hotelId: targetHotelId,
+              guestId: customerId,
+              arrival: res.StartUtc ? new Date(res.StartUtc).toISOString().slice(11, 16) : '15:00',
+              departure: res.EndUtc ? new Date(res.EndUtc).toISOString().slice(11, 16) : '11:00',
+              nights,
+              adults: res.AdultCount || 1,
+              children: res.ChildCount || 0,
+              roomType: res.ResourceCategoryId || 'Deluxe Room',
+              status: mapMewsReservationState(res.State),
+              rate: res.Rate?.Amount ? `€${res.Rate.Amount}/night` : '€150/night',
+            },
+            create: {
+              number: resNumber,
+              mewsId: res.Id,
+              hotelId: targetHotelId,
+              guestId: customerId,
+              arrival: res.StartUtc ? new Date(res.StartUtc).toISOString().slice(11, 16) : '15:00',
+              departure: res.EndUtc ? new Date(res.EndUtc).toISOString().slice(11, 16) : '11:00',
+              nights,
+              adults: res.AdultCount || 1,
+              children: res.ChildCount || 0,
+              roomType: res.ResourceCategoryId || 'Deluxe Room',
+              status: mapMewsReservationState(res.State),
+              rate: res.Rate?.Amount ? `€${res.Rate.Amount}/night` : '€150/night',
+            },
+          });
+          reservationsSynced++;
+        } catch (resErr) {
+          console.warn(`[PmsSync] Warning upserting reservation ${res.Id}:`, resErr.message);
+        }
       }
 
       // 5. Process and Upsert Rooms into MySQL Room table
-      const roomChunks = chunkArray(mewsResources, 8);
-      for (const chunk of roomChunks) {
-        await Promise.all(
-          chunk.map(async (room) => {
-            const roomNumber = room.Name || room.Number;
-            if (!roomNumber) return;
+      // Deduplicate rooms by room number
+      const uniqueRoomMap = new Map();
+      for (const room of (mewsResources || [])) {
+        const roomNumber = String(room.Name || room.Number || '');
+        if (roomNumber && !uniqueRoomMap.has(roomNumber)) {
+          uniqueRoomMap.set(roomNumber, room);
+        }
+      }
 
-            await prisma.room.upsert({
-              where: { number: String(roomNumber) },
-              update: {
-                mewsId: room.Id || null,
-                hotelId: targetHotelId,
-                floor: room.FloorNumber || 1,
-                status: mapMewsRoomState(room.State),
-                cleaningType: 'Departure',
-                guestStatus: room.IsOccupied ? 'Occupied' : 'Vacant',
-                updatedAt: new Date().toISOString(),
-              },
-              create: {
-                number: String(roomNumber),
-                mewsId: room.Id || null,
-                hotelId: targetHotelId,
-                floor: room.FloorNumber || 1,
-                status: mapMewsRoomState(room.State),
-                cleaningType: 'Departure',
-                guestStatus: room.IsOccupied ? 'Occupied' : 'Vacant',
-                updatedAt: new Date().toISOString(),
-              },
-            });
-            roomsSynced++;
-          })
-        );
+      for (const [roomNumber, room] of uniqueRoomMap.entries()) {
+        try {
+          await prisma.room.upsert({
+            where: { number: roomNumber },
+            update: {
+              mewsId: room.Id || null,
+              hotelId: targetHotelId,
+              floor: room.FloorNumber || 1,
+              status: mapMewsRoomState(room.State),
+              cleaningType: 'Departure',
+              guestStatus: room.IsOccupied ? 'Occupied' : 'Vacant',
+              updatedAt: new Date().toISOString(),
+            },
+            create: {
+              number: roomNumber,
+              mewsId: room.Id || null,
+              hotelId: targetHotelId,
+              floor: room.FloorNumber || 1,
+              status: mapMewsRoomState(room.State),
+              cleaningType: 'Departure',
+              guestStatus: room.IsOccupied ? 'Occupied' : 'Vacant',
+              updatedAt: new Date().toISOString(),
+            },
+          });
+          roomsSynced++;
+        } catch (roomErr) {
+          console.warn(`[PmsSync] Warning upserting room ${roomNumber}:`, roomErr.message);
+        }
       }
 
       // 6. Update sync timestamp on PmsIntegration
