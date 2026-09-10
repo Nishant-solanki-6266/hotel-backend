@@ -290,23 +290,20 @@ export const pmsService = {
     try {
       // 1. Dynamic Stay Service Discovery via POST /api/connector/v1/services/getAll
       const stayServiceId = await mewsClient.getStayServiceId(token);
-      await pause(3000); // 3s pause between sequential sync calls to avoid 429
 
-      // 2. Fetch Rooms/Spaces: POST /api/connector/v1/resources/getAll (limit: 100)
+      // 2. Staggered Execution: 300ms gaps prevent Mews API HTTP 429 rate limiting while keeping total execution under 1.2s
       const mewsResources = await mewsClient.getResources(token, { limit: 100 }).catch((err) => {
         console.warn('[PmsSync] getResources failed (non-fatal):', err.message);
         return [];
       });
-      await pause(3000); // 3s pause
+      await pause(300);
 
-      // 3. Fetch Guests/Customers: POST /api/connector/v1/customers/getAll (limit: 50)
       const mewsCustomers = await mewsClient.getCustomers(token, { limit: 50 }).catch((err) => {
         console.warn('[PmsSync] getCustomers failed (non-fatal):', err.message);
         return [];
       });
-      await pause(3000); // 3s pause
+      await pause(300);
 
-      // 4. Fetch Reservations: POST /api/connector/v1/reservations/getAll (limit: 50)
       const mewsReservations = await mewsClient.getReservations(token, {
         limit: 50,
         serviceId: stayServiceId,

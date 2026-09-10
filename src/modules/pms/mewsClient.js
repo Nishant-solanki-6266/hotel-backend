@@ -40,8 +40,8 @@ export class MewsClient {
       ...payload,
     };
 
-    const maxAttempts = 3;
-    const backoffs = [5000, 10000, 15000]; // 5s, 10s, 15s backoff intervals
+    const maxAttempts = 2;
+    const backoffs = [1200, 2400]; // 1.2s, 2.4s backoff intervals for HTTP 429 rate limit recovery
     let lastError = null;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -53,7 +53,7 @@ export class MewsClient {
             Accept: 'application/json',
           },
           body: JSON.stringify(requestBody),
-          signal: AbortSignal.timeout ? AbortSignal.timeout(15000) : undefined,
+          signal: AbortSignal.timeout ? AbortSignal.timeout(4000) : undefined,
         });
 
         // Handle HTTP 429 Rate Limiting with Retry-After header and exponential backoff
