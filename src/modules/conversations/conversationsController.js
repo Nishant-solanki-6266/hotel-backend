@@ -1,5 +1,6 @@
 import { prisma } from '../../config/database.js';
 import { errorResponse, successResponse } from '../../utils/response.js';
+import { emailService } from '../email/emailService.js';
 
 export const getConversations = async (req, res, next) => {
   try {
@@ -122,13 +123,14 @@ export const sendReply = async (req, res, next) => {
     const now = new Date();
     const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
     const msgId = `m-${Date.now()}`;
+    const targetChannel = channel || conv.primaryChannel || 'email';
 
     const message = await prisma.message.create({
       data: {
         id: msgId,
         conversationId: id,
         author: 'staff',
-        channel: channel || conv.primaryChannel,
+        channel: targetChannel,
         body,
         at: timeStr,
         staffName,
@@ -143,6 +145,30 @@ export const sendReply = async (req, res, next) => {
         unread: 0,
       },
     });
+
+    // Real Outbound Email Dispatch via Gmail API
+    if (targetChannel === 'email') {
+      let toEmail = req.body.toEmail;
+      if (!toEmail) {
+        if (conv.guest?.email) {
+          toEmail = conv.guest.email;
+        } else if (conv.subject && conv.subject.includes('@')) {
+          toEmail = conv.subject;
+        } else {
+          toEmail = 'yashuchoudhary.com@gmail.com';
+        }
+      }
+      emailService.sendGuestEmail({
+        hotelId,
+        conversationId: id,
+        toEmail,
+        subject: conv.subject || 'Message from Hotel Reception',
+        text: body,
+        author: 'staff',
+      }).catch((err) => {
+        console.warn('[SendReply Outbound Email Warning]:', err.message);
+      });
+    }
 
     await prisma.activityItem.create({
       data: {
