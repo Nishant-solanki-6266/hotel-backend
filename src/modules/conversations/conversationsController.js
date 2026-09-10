@@ -26,24 +26,40 @@ export const getConversations = async (req, res, next) => {
       orderBy: { lastAt: 'desc' },
     });
 
-    const parsed = conversations.map((c) => ({
-      ...c,
-      channels: c.primaryChannel ? [c.primaryChannel] : ['whatsapp'],
-      knowledgeUsed: JSON.parse(c.knowledgeUsed || '[]'),
-      upsellIdeas: JSON.parse(c.upsellIdeas || '[]'),
-      taskIds: JSON.parse(c.taskIds || '[]'),
-      escalation: c.escalation ? JSON.parse(c.escalation) : undefined,
-      guest: {
-        ...c.guest,
-        tags: JSON.parse(c.guest?.tags || '[]'),
-        reservation: c.guest?.reservations?.[0] || null,
-      },
-      messages: (c.messages || []).map((m) => ({
-        ...m,
-        knowledge: JSON.parse(m.knowledge || '[]'),
-        buttons: JSON.parse(m.buttons || '[]'),
-      })),
-    }));
+    const allHotelReservations = await prisma.reservation.findMany({
+      where: { hotelId },
+    });
+
+    const parsed = conversations.map((c) => {
+      let resObj = c.guest?.reservations?.[0] || null;
+      if (!resObj && allHotelReservations.length > 0) {
+        if (c.guest?.room) {
+          resObj = allHotelReservations.find((r) => r.room === c.guest.room) || null;
+        }
+        if (!resObj && c.guest?.name) {
+          resObj = allHotelReservations.find((r) => r.guestId === c.guest.id || r.mewsId === c.guest.mewsId) || null;
+        }
+      }
+
+      return {
+        ...c,
+        channels: c.primaryChannel ? [c.primaryChannel] : ['whatsapp'],
+        knowledgeUsed: JSON.parse(c.knowledgeUsed || '[]'),
+        upsellIdeas: JSON.parse(c.upsellIdeas || '[]'),
+        taskIds: JSON.parse(c.taskIds || '[]'),
+        escalation: c.escalation ? JSON.parse(c.escalation) : undefined,
+        guest: {
+          ...c.guest,
+          tags: JSON.parse(c.guest?.tags || '[]'),
+          reservation: resObj,
+        },
+        messages: (c.messages || []).map((m) => ({
+          ...m,
+          knowledge: JSON.parse(m.knowledge || '[]'),
+          buttons: JSON.parse(m.buttons || '[]'),
+        })),
+      };
+    });
 
     return successResponse(res, parsed, 'Conversations list');
   } catch (error) {
@@ -74,6 +90,16 @@ export const getConversationById = async (req, res, next) => {
       return errorResponse(res, 'Conversation not found', 404);
     }
 
+    let resObj = conversation.guest?.reservations?.[0] || null;
+    if (!resObj) {
+      if (conversation.guest?.room) {
+        resObj = await prisma.reservation.findFirst({ where: { hotelId, room: conversation.guest.room } });
+      }
+      if (!resObj && conversation.guest?.id) {
+        resObj = await prisma.reservation.findFirst({ where: { hotelId, guestId: conversation.guest.id } });
+      }
+    }
+
     const parsed = {
       ...conversation,
       channels: conversation.primaryChannel ? [conversation.primaryChannel] : ['whatsapp'],
@@ -84,7 +110,7 @@ export const getConversationById = async (req, res, next) => {
       guest: {
         ...conversation.guest,
         tags: JSON.parse(conversation.guest?.tags || '[]'),
-        reservation: conversation.guest?.reservations?.[0] || null,
+        reservation: resObj,
       },
       messages: (conversation.messages || []).map((m) => ({
         ...m,
