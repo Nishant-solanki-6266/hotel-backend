@@ -25,7 +25,20 @@ export const getSubscription = async (req, res, next) => {
 
     if (!subscription) {
       // Deterministically create default subscription for this hotel
-      const hotel = await prisma.hotel.findUnique({ where: { id: hotelId } });
+      let hotel = await prisma.hotel.findUnique({ where: { id: hotelId } });
+      if (!hotel) {
+        hotel = await prisma.hotel.upsert({
+          where: { id: hotelId },
+          update: {},
+          create: {
+            id: hotelId,
+            name: 'Hotel Mercier',
+            legalName: 'Hotel Mercier BV',
+            stars: 4,
+            roomsCount: 48,
+          },
+        });
+      }
       const rooms = hotel?.roomsCount || 48;
       const hotelName = hotel?.name || 'Hotel Mercier BV';
 
