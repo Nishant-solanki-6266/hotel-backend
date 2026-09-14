@@ -43,12 +43,16 @@ export const authenticate = async (req, res, next) => {
       },
     }).catch(() => null);
 
+    if (!user) {
+      return errorResponse(res, 'User account no longer exists or has been deactivated', 401);
+    }
+
     req.user = {
-      id: decoded.id,
-      name: user?.name || decoded.name || 'Staff User',
-      email: user?.email || decoded.email || '',
-      role: user?.role || decoded.role || 'front-office',
-      hotelId,
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      hotelId: user.hotelId || hotelId,
     };
 
     next();

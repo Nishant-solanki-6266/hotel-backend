@@ -28,13 +28,18 @@ export const getConversations = async (req, res, next) => {
 
     const allHotelReservations = await prisma.reservation.findMany({
       where: { hotelId },
+      include: {
+        guest: {
+          select: { room: true },
+        },
+      },
     });
 
     const parsed = conversations.map((c) => {
       let resObj = c.guest?.reservations?.[0] || null;
       if (!resObj && allHotelReservations.length > 0) {
         if (c.guest?.room) {
-          resObj = allHotelReservations.find((r) => r.room === c.guest.room) || null;
+          resObj = allHotelReservations.find((r) => r.guest?.room === c.guest.room) || null;
         }
         if (!resObj && c.guest?.name) {
           resObj = allHotelReservations.find((r) => r.guestId === c.guest.id || r.mewsId === c.guest.mewsId) || null;
@@ -93,7 +98,14 @@ export const getConversationById = async (req, res, next) => {
     let resObj = conversation.guest?.reservations?.[0] || null;
     if (!resObj) {
       if (conversation.guest?.room) {
-        resObj = await prisma.reservation.findFirst({ where: { hotelId, room: conversation.guest.room } });
+        resObj = await prisma.reservation.findFirst({
+          where: {
+            hotelId,
+            guest: {
+              room: conversation.guest.room,
+            },
+          },
+        });
       }
       if (!resObj && conversation.guest?.id) {
         resObj = await prisma.reservation.findFirst({ where: { hotelId, guestId: conversation.guest.id } });

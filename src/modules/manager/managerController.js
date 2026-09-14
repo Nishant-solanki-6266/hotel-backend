@@ -44,7 +44,10 @@ export const getBriefing = async (req, res, next) => {
       prisma.room.findMany({ where: { hotelId } }),
       prisma.task.count({ where: { hotelId, status: { not: 'Completed' } } }),
       prisma.issue.count({ where: { hotelId, status: { not: 'Completed' } } }),
-      prisma.conversation.findMany({ where: { guest: { hotelId } } }),
+      prisma.conversation.findMany({
+        where: { guest: { hotelId } },
+        include: { guest: true },
+      }),
       prisma.upsell.findMany({ where: { hotelId } }).catch(() => []),
       prisma.activityItem.findMany({ where: { hotelId }, take: 10, orderBy: { id: 'desc' } }),
     ]);
@@ -57,22 +60,85 @@ export const getBriefing = async (req, res, next) => {
 
     const escalations = conversations
       .filter((c) => c.escalation)
-      .map((c) => ({
-        id: c.id,
-        guestName: c.guestId,
-        escalation: JSON.parse(c.escalation),
-      }));
+      .map((c) => {
+        let parsedEscalation = null;
+        try {
+          parsedEscalation = typeof c.escalation === 'string' ? JSON.parse(c.escalation) : c.escalation;
+        } catch (_) {
+          parsedEscalation = { reason: String(c.escalation) };
+        }
+        return {
+          id: c.id,
+          guestName: c.guest?.name || c.guestId,
+          room: c.guest?.room || undefined,
+          escalation: parsedEscalation,
+        };
+      });
 
     const acceptedUpsellsTotal = upsells
       .filter((u) => u.status === 'Accepted')
       .reduce((acc, curr) => acc + curr.value, 0);
+
+    const occupancyPct = totalRooms > 0 ? Math.round((occupiedRooms / totalRooms) * 100) : 0;
+
+    // Synthesize Dynamic Operational AI Advice
+    const aiAdvice = [];
+    if (dirtyRooms > cleanRooms) {
+      aiAdvice.push({
+        topic: 'Housekeeping Pace',
+        level: 'attend',
+        title: `${dirtyRooms} dirty rooms vs ${cleanRooms} ready`,
+        action: 'Prioritize departure cleaning before standard 15:00 check-in window.',
+      });
+    } else {
+      aiAdvice.push({
+        topic: 'Housekeeping Pace',
+        level: 'good',
+        title: 'Housekeeping turnaround on schedule',
+        action: `${cleanRooms} rooms inspected and released for arrivals.`,
+      });
+    }
+
+    if (vipArrivals > 0) {
+      aiAdvice.push({
+        topic: 'VIP Arrivals',
+        level: 'urgent',
+        title: `${vipArrivals} VIP arrival${vipArrivals > 1 ? 's' : ''} scheduled today`,
+        action: 'Verify welcome praline amenities and room key cards at reception prior to arrival.',
+      });
+    }
+
+    if (occupancyPct >= 80) {
+      aiAdvice.push({
+        topic: 'Revenue & Upsell',
+        level: 'good',
+        title: `High occupancy day (${occupancyPct}%)`,
+        action: 'Restrict unpaid late check-outs and offer premium room upgrades to arriving guests.',
+      });
+    } else {
+      aiAdvice.push({
+        topic: 'Direct Bookings',
+        level: 'ai',
+        title: `Current occupancy at ${occupancyPct}%`,
+        action: 'Encourage direct website booking links for all incoming inquiries on WhatsApp.',
+      });
+    }
+
+    if (openIssues > 0) {
+      aiAdvice.push({
+        topic: 'Maintenance',
+        level: 'attend',
+        title: `${openIssues} active maintenance ticket${openIssues > 1 ? 's' : ''}`,
+        action: 'Follow up with engineering via WhatsApp simulator to clear rooms back to service.',
+      });
+    }
 
     const briefing = {
       hotelName: hotel?.name || 'Hotel',
       occupancy: {
         total: totalRooms,
         occupied: occupiedRooms,
-        rate: totalRooms > 0 ? Math.round((occupiedRooms / totalRooms) * 100) : 0,
+        rate: occupancyPct,
         clean: cleanRooms,
         dirty: dirtyRooms,
         vipArrivals,
@@ -84,6 +150,7 @@ export const getBriefing = async (req, res, next) => {
       },
       upsellRevenue: acceptedUpsellsTotal,
       escalations,
+      aiAdvice,
       recentActivity: activities,
     };
 

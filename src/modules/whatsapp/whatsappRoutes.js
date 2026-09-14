@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { authenticate } from '../../middlewares/auth.js';
 import {
   getThreads,
   handleAction,
@@ -11,12 +12,12 @@ import {
 
 const router = Router();
 
-router.get('/threads', getThreads);
-router.post('/action', handleAction);
+router.get('/threads', authenticate, getThreads);
+router.post('/action', authenticate, handleAction);
 router.get('/webhook', verifyWebhook);
 router.post('/webhook', handleWebhook);
-router.post('/send', sendTestMessage);
-router.post('/embedded-signup', handleEmbeddedSignupExchange);
+router.post('/send', authenticate, sendTestMessage);
+router.post('/embedded-signup', authenticate, handleEmbeddedSignupExchange);
 router.get('/oauth/callback', handleOAuthCallback);
 
 export default router;

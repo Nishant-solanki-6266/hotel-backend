@@ -212,6 +212,244 @@ export async function generateWithGemini({ prompt, systemInstruction = '' }) {
 }
 
 /**
+ * Detect dynamic upsell opportunities from guest inquiries and stay context
+ */
+export function detectUpsellOpportunities(messageText = '', conversation = null, guest = null) {
+  const upsells = [];
+  const text = (messageText || '').toLowerCase();
+
+  // 1. Late checkout
+  if (/\b(late check-?out|leave later|stay later|check out later|extend stay|checkout time)\b/i.test(text)) {
+    upsells.push({
+      label: 'Late checkout (14:00)',
+      value: '€35',
+      reason: 'Guest inquired about extending check-out time',
+    });
+  }
+
+  // 2. Early check-in
+  if (/\b(early check-?in|early arrival|arrive early|landing early|morning arrival|check in early)\b/i.test(text)) {
+    upsells.push({
+      label: 'Early check-in (12:00)',
+      value: '€30',
+      reason: 'Guest requested or inquired about arriving before standard check-in',
+    });
+  }
+
+  // 3. Artisanal breakfast buffet
+  if (/\b(breakfast|morning meal|buffet|dining room|coffee and croissant)\b/i.test(text)) {
+    upsells.push({
+      label: 'Artisanal breakfast buffet',
+      value: '€22 / guest',
+      reason: 'Guest mentioned or asked about breakfast service',
+    });
+  }
+
+  // 4. Celebration / Champagne / Romantic
+  if (/\b(champagne|wine|prosecco|celebrat|anniversary|birthday|honeymoon|romantic|flowers)\b/i.test(text)) {
+    upsells.push({
+      label: 'Champagne & Belgian pralines on arrival',
+      value: '€55',
+      reason: 'Guest mentioned celebration, romantic stay or special occasion',
+    });
+  }
+
+  // 5. Secure courtyard parking
+  if (/\b(parking|park|car|garage|vehicle|valet)\b/i.test(text)) {
+    upsells.push({
+      label: 'Secure courtyard parking',
+      value: '€25 / day',
+      reason: 'Guest asked about vehicle parking or garage availability',
+    });
+  }
+
+  // 6. Suite upgrade
+  if (/\b(upgrade|suite|better room|bigger room|junior suite|deluxe|balcony|view)\b/i.test(text)) {
+    upsells.push({
+      label: 'Upgrade to Junior Suite',
+      value: '€45 / night',
+      reason: 'Guest expressed interest in room upgrade or enhanced view',
+    });
+  }
+
+  return upsells;
+}
+
+/**
+ * Evaluate Hotel AI Mode & Rules for the inbound message & guest
+ */
+export async function evaluateAiPolicy({ hotelId, messageText, guest, intentType }) {
+  let aiMode = 'Autonomous';
+  let rules = [];
+
+  try {
+    const hotel = await prisma.hotel.findUnique({
+      where: { id: hotelId },
+      select: { aiMode: true },
+    });
+    if (hotel?.aiMode) {
+      aiMode = hotel.aiMode;
+    }
+
+    rules = await prisma.aiRule.findMany({
+      where: { hotelId },
+    });
+  } catch (err) {
+    console.warn('[AI Service] Policy evaluation error:', err.message);
+  }
+
+  const ruleMap = new Map();
+  for (const r of rules) {
+    ruleMap.set(r.topic, r.mode);
+  }
+
+  const getTopicMode = (topic, fallback = 'Autonomous') => {
+    return ruleMap.get(topic) || fallback;
+  };
+
+  const text = (messageText || '').toLowerCase();
+
+  // 1. Safety issues check (Always Escalate by default)
+  if (/\b(emergency|fire|police|ambulance|injury|hurt|danger|stolen|theft|robbery)\b/i.test(text)) {
+    const mode = getTopicMode('Safety issues', 'Always Escalate');
+    return {
+      topic: 'Safety issues',
+      mode,
+      requiresApproval: true,
+      escalate: mode === 'Always Escalate',
+      escalationReason: 'Safety or emergency reported by guest',
+    };
+  }
+
+  // 2. Billing disputes & Refunds
+  if (/\b(refund|money back|chargeback)\b/i.test(text)) {
+    const mode = getTopicMode('Refunds', 'Always Escalate');
+    return {
+      topic: 'Refunds',
+      mode,
+      requiresApproval: true,
+      escalate: mode === 'Always Escalate',
+      escalationReason: 'Guest requested refund or compensation',
+    };
+  }
+  if (/\b(dispute|overcharged|wrong charge|bill dispute|unauthorized charge)\b/i.test(text)) {
+    const mode = getTopicMode('Billing disputes', 'Always Escalate');
+    return {
+      topic: 'Billing disputes',
+      mode,
+      requiresApproval: true,
+      escalate: mode === 'Always Escalate',
+      escalationReason: 'Billing dispute / folio issue',
+    };
+  }
+
+  // 3. Complaints
+  if (/\b(complaint|unacceptable|terrible|horrible|awful|disgusted|furious|manager|speak with manager|demand|ruined)\b/i.test(text)) {
+    const mode = getTopicMode('Complaints', 'Human Approval');
+    return {
+      topic: 'Complaints',
+      mode,
+      requiresApproval: mode !== 'Autonomous',
+      escalate: mode === 'Always Escalate',
+      escalationReason: mode === 'Always Escalate' ? 'Guest dissatisfaction / complaint' : undefined,
+    };
+  }
+
+  // 4. VIP Guests
+  if (guest?.vip) {
+    const mode = getTopicMode('VIP guests', 'Human Approval');
+    if (mode !== 'Autonomous') {
+      return {
+        topic: 'VIP guests',
+        mode,
+        requiresApproval: true,
+        escalate: mode === 'Always Escalate',
+        escalationReason: mode === 'Always Escalate' ? 'VIP guest request requires manager escalation' : undefined,
+      };
+    }
+  }
+
+  // 5. Late checkout / early check-in
+  if (/\b(late check-?out|early check-?in|extend stay)\b/i.test(text)) {
+    const mode = getTopicMode('Late checkout / early check-in', 'Human Approval');
+    if (mode !== 'Autonomous') {
+      return {
+        topic: 'Late checkout / early check-in',
+        mode,
+        requiresApproval: true,
+        escalate: mode === 'Always Escalate',
+        escalationReason: mode === 'Always Escalate' ? 'Late checkout / early check-in escalation' : undefined,
+      };
+    }
+  }
+
+  // 6. Global Hotel AI Mode override
+  if (aiMode === 'Suggestions Only') {
+    return {
+      topic: 'Global Policy',
+      mode: 'Suggestions Only',
+      requiresApproval: true,
+      escalate: false,
+    };
+  }
+  if (aiMode === 'Approval Required') {
+    return {
+      topic: 'Global Policy',
+      mode: 'Approval Required',
+      requiresApproval: true,
+      escalate: false,
+    };
+  }
+
+  // 7. Topic check based on intentType
+  if (intentType === 'housekeeping') {
+    const mode = getTopicMode('Housekeeping requests', 'Autonomous');
+    return {
+      topic: 'Housekeeping requests',
+      mode,
+      requiresApproval: mode !== 'Autonomous',
+      escalate: mode === 'Always Escalate',
+    };
+  }
+  if (intentType === 'maintenance') {
+    const mode = getTopicMode('Maintenance reports', 'Autonomous');
+    return {
+      topic: 'Maintenance reports',
+      mode,
+      requiresApproval: mode !== 'Autonomous',
+      escalate: mode === 'Always Escalate',
+    };
+  }
+  if (intentType === 'pms_availability') {
+    const mode = getTopicMode('Availability & pricing', 'Autonomous');
+    return {
+      topic: 'Availability & pricing',
+      mode,
+      requiresApproval: mode !== 'Autonomous',
+      escalate: mode === 'Always Escalate',
+    };
+  }
+
+  // General or Hotel Information
+  const infoMode = getTopicMode('Hotel information', 'Autonomous');
+  if (infoMode !== 'Autonomous') {
+    return {
+      topic: 'Hotel information',
+      mode: infoMode,
+      requiresApproval: true,
+      escalate: infoMode === 'Always Escalate',
+    };
+  }
+
+  return {
+    topic: 'General questions',
+    mode: 'Autonomous',
+    requiresApproval: false,
+    escalate: false,
+  };
+}
+
+/**
  * Process inbound guest message, detect intent and trigger automated actions with RAG
  */
 export async function processGuestMessageAI({
@@ -242,6 +480,23 @@ export async function processGuestMessageAI({
   const room = extractRoomNumber(messageText, conversation, guest) || '208';
   const timeStr = getClockTime();
 
+  // Detect upsell opportunities
+  const detectedUpsells = detectUpsellOpportunities(messageText, conversation, guest);
+  if (detectedUpsells.length > 0) {
+    try {
+      const existingUpsells = JSON.parse(conversation.upsellIdeas || '[]');
+      const existingLabels = new Set(existingUpsells.map((u) => u.label));
+      const combinedUpsells = [...existingUpsells, ...detectedUpsells.filter((u) => !existingLabels.has(u.label))];
+      await prisma.conversation.update({
+        where: { id: conversationId },
+        data: {
+          upsellIdeas: JSON.stringify(combinedUpsells),
+          lastAt: timeStr,
+        },
+      });
+    } catch (_) {}
+  }
+
   // 1. Retrieve RAG Knowledge context strictly for this hotel
   const rag = await retrieveRelevantKnowledge(effectiveHotelId, messageText);
   const hotelName = rag.hotelProfile?.name || 'Hotel Front Desk';
@@ -249,6 +504,13 @@ export async function processGuestMessageAI({
   // 2. Check for Housekeeping Intent
   for (const pattern of HOUSEKEEPING_PATTERNS) {
     if (pattern.regex.test(messageText)) {
+      const policy = await evaluateAiPolicy({
+        hotelId: effectiveHotelId,
+        messageText,
+        guest,
+        intentType: 'housekeeping',
+      });
+
       const itemTitle = `${pattern.item} — Room ${room}`;
       const taskId = `t-${Date.now()}`;
       const dueTime = getDueTime(pattern.priority === 'High' ? 15 : 25);
@@ -312,7 +574,7 @@ export async function processGuestMessageAI({
           text: `AI created task for Housekeeping: "${itemTitle}"`,
           meta: `Room ${room}`,
         },
-      }).catch(() => { });
+      }).catch(() => {});
 
       let aiReplyBody = await generateWithGemini({
         prompt: `A hotel guest (${guestName}, Room ${room}) sent this message: "${messageText}". Write a polite, warm, concise 2-sentence hotel reply letting them know we have dispatched housekeeping with their ${pattern.item.toLowerCase()} right away.`,
@@ -323,7 +585,22 @@ export async function processGuestMessageAI({
         aiReplyBody = `Certainly, ${guestName.split(' ')[0] || 'Sir/Madam'}. I have logged your request for ${pattern.item.toLowerCase()} for Room ${room}. Our housekeeping team has been dispatched and will attend to this promptly.`;
       }
 
-      // Save AI Message in Conversation
+      if (policy.requiresApproval) {
+        return {
+          handled: true,
+          requiresApproval: true,
+          aiStatus: 'human-takeover',
+          type: 'housekeeping',
+          task,
+          replyText: aiReplyBody,
+          suggestedReply: aiReplyBody,
+          upsellIdeas: detectedUpsells,
+          policy,
+          escalation: policy.escalate ? { reason: policy.escalationReason || 'Policy escalation', at: timeStr } : null,
+        };
+      }
+
+      // Save AI Message in Conversation if autonomous
       const aiMsg = await prisma.message.create({
         data: {
           id: `m-${Date.now()}`,
@@ -338,10 +615,15 @@ export async function processGuestMessageAI({
 
       return {
         handled: true,
+        requiresApproval: false,
+        aiStatus: 'ai-handling',
         type: 'housekeeping',
         task,
         message: aiMsg,
         replyText: aiReplyBody,
+        suggestedReply: aiReplyBody,
+        upsellIdeas: detectedUpsells,
+        policy,
       };
     }
   }
@@ -349,6 +631,13 @@ export async function processGuestMessageAI({
   // 3. Check for Maintenance Intent
   for (const pattern of MAINTENANCE_PATTERNS) {
     if (pattern.regex.test(messageText)) {
+      const policy = await evaluateAiPolicy({
+        hotelId: effectiveHotelId,
+        messageText,
+        guest,
+        intentType: 'maintenance',
+      });
+
       const issueTitle = `${pattern.issue} in Room ${room}`;
       const issueId = `MT-${Date.now().toString().slice(-4)}`;
       const taskId = `t-${Date.now()}`;
@@ -390,6 +679,21 @@ export async function processGuestMessageAI({
         aiReplyBody = `I apologize for the inconvenience regarding the ${pattern.issue.toLowerCase()} in Room ${room}. Our engineering team has been alerted immediately and a technician will visit your room shortly.`;
       }
 
+      if (policy.requiresApproval) {
+        return {
+          handled: true,
+          requiresApproval: true,
+          aiStatus: 'human-takeover',
+          type: 'maintenance',
+          task,
+          replyText: aiReplyBody,
+          suggestedReply: aiReplyBody,
+          upsellIdeas: detectedUpsells,
+          policy,
+          escalation: policy.escalate ? { reason: policy.escalationReason || 'Policy escalation', at: timeStr } : null,
+        };
+      }
+
       const aiMsg = await prisma.message.create({
         data: {
           id: `m-${Date.now()}`,
@@ -404,10 +708,15 @@ export async function processGuestMessageAI({
 
       return {
         handled: true,
+        requiresApproval: false,
+        aiStatus: 'ai-handling',
         type: 'maintenance',
         task,
         message: aiMsg,
         replyText: aiReplyBody,
+        suggestedReply: aiReplyBody,
+        upsellIdeas: detectedUpsells,
+        policy,
       };
     }
   }
@@ -415,6 +724,13 @@ export async function processGuestMessageAI({
   // 4. Check for Room Availability & Pre-Arrival Booking Inquiry
   const isAvailabilityInquiry = /\b(availability|available room|rooms available|book a room|booking|rates|rate|price|pricing|vacancy|vacant|cost per night)\b/i.test(messageText);
   if (isAvailabilityInquiry) {
+    const policy = await evaluateAiPolicy({
+      hotelId: effectiveHotelId,
+      messageText,
+      guest,
+      intentType: 'pms_availability',
+    });
+
     const pmsAvail = await pmsService.checkAvailability(effectiveHotelId);
     const bookingUrl = pmsAvail.bookingEngine || 'https://booking.hotelmercier.be';
     const categoriesText = (pmsAvail.categories || []).map((c) => `- ${c.name}: ${c.rate}`).join('\n');
@@ -432,6 +748,20 @@ Write a polite, warm 2-3 sentence response confirming availability, mentioning s
       aiReplyBody = `We have rooms available for your stay! Our Deluxe Courtyard rooms start from €160/night and Superior King from €185/night. You can view full availability and reserve directly on our website here: ${bookingUrl}`;
     }
 
+    if (policy.requiresApproval) {
+      return {
+        handled: true,
+        requiresApproval: true,
+        aiStatus: 'human-takeover',
+        type: 'pms_availability',
+        replyText: aiReplyBody,
+        suggestedReply: aiReplyBody,
+        upsellIdeas: detectedUpsells,
+        policy,
+        escalation: policy.escalate ? { reason: policy.escalationReason || 'Policy escalation', at: timeStr } : null,
+      };
+    }
+
     const aiMsg = await prisma.message.create({
       data: {
         id: `m-${Date.now()}`,
@@ -446,13 +776,25 @@ Write a polite, warm 2-3 sentence response confirming availability, mentioning s
 
     return {
       handled: true,
+      requiresApproval: false,
+      aiStatus: 'ai-handling',
       type: 'pms_availability',
       message: aiMsg,
       replyText: aiReplyBody,
+      suggestedReply: aiReplyBody,
+      upsellIdeas: detectedUpsells,
+      policy,
     };
   }
 
   // 5. Hotel Policies, FAQs & General Questions with RAG
+  const policy = await evaluateAiPolicy({
+    hotelId: effectiveHotelId,
+    messageText,
+    guest,
+    intentType: rag.docNames.length > 0 ? 'knowledge_rag' : 'general',
+  });
+
   const ragPrompt = `A hotel guest (${guestName}, Room ${room}) asked: "${messageText}".
 ${rag.contextText ? `\nVerified Hotel Information & Stored Policies:\n${rag.contextText}\n` : ''}
 Write a polite, accurate, concise 1-3 sentence response directly answering their question based on the verified hotel policies above.
@@ -466,7 +808,7 @@ Write a polite, accurate, concise 1-3 sentence response directly answering their
     systemInstruction: ragSystem,
   });
 
-  // 5. Contextual Fallback if Gemini API is offline or returns null
+  // Contextual Fallback if Gemini API is offline or returns null
   if (!replyText) {
     const lower = messageText.toLowerCase();
     if (lower.includes('check-in') || lower.includes('check in') || lower.includes('arrival')) {
@@ -484,7 +826,6 @@ Write a polite, accurate, concise 1-3 sentence response directly answering their
     } else if (lower.includes('pet') || lower.includes('dog') || lower.includes('cat')) {
       replyText = `Small well-behaved pets are welcome at our property upon advance notice. Please inform the front desk so we can prepare pet amenities for your room.`;
     } else if (rag.chunks.length > 0) {
-      // Synthesize fallback from top chunk content
       const snippet = rag.chunks[0].content.slice(0, 150).trim();
       replyText = `Regarding your inquiry: "${snippet}..." Our front desk team is also available 24/7 if you have further questions.`;
     } else {
@@ -504,7 +845,22 @@ Write a polite, accurate, concise 1-3 sentence response directly answering their
           lastAt: timeStr,
         },
       });
-    } catch (_) { }
+    } catch (_) {}
+  }
+
+  if (policy.requiresApproval) {
+    return {
+      handled: true,
+      requiresApproval: true,
+      aiStatus: 'human-takeover',
+      type: rag.docNames.length > 0 ? 'knowledge_rag' : 'general',
+      replyText,
+      suggestedReply: replyText,
+      knowledgeUsed: rag.docNames,
+      upsellIdeas: detectedUpsells,
+      policy,
+      escalation: policy.escalate ? { reason: policy.escalationReason || 'Policy escalation', at: timeStr } : null,
+    };
   }
 
   const aiMsg = await prisma.message.create({
@@ -536,9 +892,14 @@ Write a polite, accurate, concise 1-3 sentence response directly answering their
 
   return {
     handled: true,
+    requiresApproval: false,
+    aiStatus: 'ai-handling',
     type: rag.docNames.length > 0 ? 'knowledge_rag' : 'general',
     message: aiMsg,
     replyText,
+    suggestedReply: replyText,
     knowledgeUsed: rag.docNames,
+    upsellIdeas: detectedUpsells,
+    policy,
   };
 }

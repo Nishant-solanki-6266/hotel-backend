@@ -344,13 +344,22 @@ export class MewsClient {
     };
     const mewsState = mewsStateMap[state] || state;
     try {
-      return await this._post('/spaces/updateState', accessToken, {
-        SpaceId: spaceId,
+      // Modern Mews Connector API endpoint
+      return await this._post('/resources/update', accessToken, {
+        ResourceId: spaceId,
         State: mewsState,
       });
-    } catch (err) {
-      console.warn('[MewsClient] updateSpaceState notice:', err.message);
-      return null;
+    } catch (modernErr) {
+      try {
+        // Fallback for legacy Mews Connector API accounts
+        return await this._post('/spaces/updateState', accessToken, {
+          SpaceId: spaceId,
+          State: mewsState,
+        });
+      } catch (err) {
+        console.warn('[MewsClient] updateSpaceState notice:', err.message);
+        return null;
+      }
     }
   }
 
@@ -372,39 +381,48 @@ export class MewsClient {
    * Endpoint: POST /api/connector/v1/customers/getAll
    */
   async getCustomers(accessToken, options = {}) {
-    const limit = options.limit || 50;
+    const limit = options.limit || 100;
+    const filter = {
+      Limitation: { Count: limit },
+      Extent: { Customers: true, Addresses: true },
+    };
+    if (options.customerIds && options.customerIds.length > 0) {
+      filter.CustomerIds = options.customerIds;
+    } else if (options.createdUtc) {
+      filter.CreatedUtc = options.createdUtc;
+    } else if (options.updatedUtc) {
+      filter.UpdatedUtc = options.updatedUtc;
+    } else {
+      const now = new Date();
+      const past30d = new Date(now.getTime() - 30 * 24 * 3600 * 1000).toISOString();
+      filter.UpdatedUtc = {
+        StartUtc: past30d,
+        EndUtc: now.toISOString(),
+      };
+    }
 
-    // 1. Primary: FirstNames filter
     try {
-      const data = await this._post('/customers/getAll', accessToken, {
-        FirstNames: ['a', 'e', 'i', 'o', 'u'],
-        Limitation: { Count: limit },
-        Extent: { Customers: true, Addresses: true },
-      });
+      const data = await this._post('/customers/getAll', accessToken, filter);
       if (data.Customers && data.Customers.length > 0) {
         return data.Customers;
       }
     } catch (err) {
-      // If auth error, fast-fail immediately
       if (String(err.message).toLowerCase().includes('expired') || String(err.message).toLowerCase().includes('session')) {
         throw err;
       }
+      console.warn('[MewsClient] getCustomers notice, trying standard query:', err.message);
+      try {
+        const fallbackData = await this._post('/customers/getAll', accessToken, {
+          Limitation: { Count: limit },
+          Extent: { Customers: true, Addresses: true },
+        });
+        return fallbackData.Customers || [];
+      } catch (fbErr) {
+        console.warn('[MewsClient] getCustomers fallback failed:', fbErr.message);
+        return [];
+      }
     }
-
-    // 2. Safe UTC range fallback
-    const now = new Date();
-    const daysBack = options.daysBack || 90;
-    const startUtc = new Date(now.getTime() - daysBack * 24 * 60 * 60 * 1000).toISOString();
-    const endUtc = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
-
-    const data = await this._post('/customers/getAll', accessToken, {
-      TimeFilter: 'Created',
-      StartUtc: startUtc,
-      EndUtc: endUtc,
-      Limitation: { Count: limit },
-      Extent: { Customers: true, Addresses: true },
-    });
-    return data.Customers || [];
+    return [];
   }
 
   /**
