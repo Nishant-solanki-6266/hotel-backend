@@ -8,4 +8,9 @@ export const config = {
   jwtSecret: process.env.JWT_SECRET || 'hotelogx_connect_jwt_secret_key_2026',
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',
   frontendUrl: process.env.FRONTEND_URL || 'http://localhost:3000',
+  microsoftClientId: process.env.MICROSOFT_CLIENT_ID || '',
+  microsoftClientSecret: process.env.MICROSOFT_CLIENT_SECRET || '',
+  microsoftTenantId: process.env.MICROSOFT_TENANT_ID || 'common',
+  microsoftRedirectUri: process.env.MICROSOFT_REDIRECT_URI || 'http://localhost:5000/api/email/oauth/microsoft/callback',
+  microsoftGraphBaseUrl: process.env.MICROSOFT_GRAPH_BASE_URL || 'https://graph.microsoft.com/v1.0',
 };

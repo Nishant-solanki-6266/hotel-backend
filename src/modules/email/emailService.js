@@ -3,6 +3,7 @@ import net from 'node:net';
 import { prisma } from '../../config/database.js';
 import { realtimeService } from '../../services/realtimeService.js';
 import { gmailClient } from './gmailClient.js';
+import { microsoftClient } from './microsoftClient.js';
 
 /**
  * Service for Email verification, inbound mailbox processing, and outbound guest messaging.
@@ -272,7 +273,7 @@ export const emailService = {
     }
 
     // 5. Append message to conversation
-    const msgId = `m-${Date.now()}`;
+    const msgId = payload.messageId || payload.id || `m-${Date.now()}`;
     const messageRecord = await prisma.message.create({
       data: {
         id: msgId,
@@ -428,32 +429,41 @@ export const emailService = {
 
     const timeStr = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
     let dispatched = false;
-    let gmailResult = null;
+    let sendResult = null;
 
-    // Check if hotel has an active Gmail OAuth connection
+    // Check if hotel has an active cloud email OAuth connection (Google or Microsoft)
     try {
       const integration = await prisma.emailIntegration.findUnique({
         where: { hotelId },
       });
 
       if (integration?.provider === 'google' && integration?.accessToken) {
-        gmailResult = await gmailClient.sendGuestGmail({
+        sendResult = await gmailClient.sendGuestGmail({
           hotelId,
           to: toEmail,
           subject: subject || 'Message from Hotel Reception',
           bodyText: text,
           threadId,
         });
-        dispatched = Boolean(gmailResult?.success);
+        dispatched = Boolean(sendResult?.success);
+      } else if (integration?.provider === 'microsoft' && integration?.accessToken) {
+        sendResult = await microsoftClient.sendGuestMicrosoftMail({
+          hotelId,
+          to: toEmail,
+          subject: subject || 'Message from Hotel Reception',
+          bodyText: text,
+          threadId,
+          messageId: threadId,
+        });
+        dispatched = Boolean(sendResult?.success);
       } else {
-        // Fallback for demo/unconfigured hotels without Gmail credentials
-        console.log(`[Gmail Service Fallback] Dispatched reply to ${toEmail} (hotel: ${hotelId}): "${text.slice(0, 60)}"`);
+        // Fallback for demo/unconfigured hotels without cloud credentials
+        console.log(`[Email Service Fallback] Dispatched reply to ${toEmail} (hotel: ${hotelId}): "${text.slice(0, 60)}"`);
         dispatched = true;
       }
     } catch (sendErr) {
-      console.warn(`[Gmail Send Warning for ${hotelId}]:`, sendErr.message);
-      // In development or test with unauthenticated dummy tokens, fall back gracefully
-      if (process.env.NODE_ENV === 'test' || !process.env.GOOGLE_CLIENT_SECRET || sendErr.message.includes('invalid authentication credentials') || sendErr.message.includes('Request had invalid authentication')) {
+      console.warn(`[Email Send Warning for ${hotelId}]:`, sendErr.message);
+      if (process.env.NODE_ENV === 'test' || sendErr.message.includes('invalid authentication credentials') || sendErr.message.includes('Request had invalid authentication')) {
         dispatched = true;
       } else {
         throw sendErr;
@@ -494,8 +504,9 @@ export const emailService = {
     return {
       success: true,
       dispatched,
-      messageId: createdMsg?.id || gmailResult?.messageId,
-      threadId: gmailResult?.threadId || threadId,
+      messageId: createdMsg?.id || sendResult?.messageId,
+      threadId: sendResult?.threadId || threadId,
+      provider: sendResult?.provider || 'email',
       at: timeStr,
     };
   },
@@ -541,10 +552,82 @@ export const emailService = {
 
     return {
       success: true,
+      provider: 'google',
       count: processed.length,
       syncedAt: new Date().toISOString(),
       messages: processed,
     };
+  },
+
+  /**
+   * Synchronize incoming guest emails from the hotel's authenticated Microsoft 365 inbox
+   */
+  async syncHotelMicrosoftInbox(hotelId = 'hotel-mercier', maxResults = 10) {
+    if (!hotelId) {
+      throw new Error('hotelId is required for Microsoft sync');
+    }
+
+    const messages = await microsoftClient.fetchRecentMicrosoftMessages(hotelId, maxResults);
+    const processed = [];
+
+    for (const msg of messages) {
+      try {
+        // Idempotent duplicate check: verify deterministic Microsoft message ID
+        const deterministicId = `msg-ms-${msg.id}`;
+        const exists = await prisma.message.findUnique({
+          where: { id: deterministicId },
+        });
+
+        if (!exists) {
+          const result = await this.processInboundEmail({
+            messageId: `msg-ms-${msg.id}`,
+            from: msg.from,
+            to: msg.to,
+            subject: msg.subject,
+            text: msg.bodyText,
+            hotelId,
+          });
+          processed.push(result);
+        }
+      } catch (procErr) {
+        console.warn(`[Microsoft Sync Ingestion Warning]:`, procErr.message);
+      }
+    }
+
+    // Update last sync time
+    await prisma.emailIntegration.update({
+      where: { hotelId },
+      data: { lastSyncAt: new Date() },
+    }).catch(() => {});
+
+    return {
+      success: true,
+      provider: 'microsoft',
+      count: processed.length,
+      synced: processed.length,
+      skipped: messages.length - processed.length,
+      syncedAt: new Date().toISOString(),
+      messages: processed,
+    };
+  },
+
+  /**
+   * Unified cloud inbox synchronization dynamically routing to Gmail or Microsoft 365
+   */
+  async syncHotelInbox(hotelId = 'hotel-mercier', maxResults = 10) {
+    if (!hotelId) {
+      throw new Error('hotelId is required for inbox sync');
+    }
+
+    const integration = await prisma.emailIntegration.findUnique({
+      where: { hotelId },
+    });
+
+    if (integration?.provider === 'microsoft') {
+      return await this.syncHotelMicrosoftInbox(hotelId, maxResults);
+    }
+
+    return await this.syncHotelGmailInbox(hotelId, maxResults);
   },
 };
 

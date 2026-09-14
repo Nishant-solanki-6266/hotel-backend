@@ -1,5 +1,6 @@
 import { emailService } from './emailService.js';
 import { gmailClient } from './gmailClient.js';
+import { microsoftClient } from './microsoftClient.js';
 import { verifyImapConnection } from '../../utils/imapVerifier.js';
 import { prisma } from '../../config/database.js';
 import { errorResponse, successResponse } from '../../utils/response.js';
@@ -323,3 +324,183 @@ export const syncGmailController = async (req, res) => {
     return errorResponse(res, error.message, 500);
   }
 };
+
+/**
+ * Controller to initiate real Microsoft Identity Platform OAuth 2.0 flow
+ * Endpoint: GET /api/email/oauth/microsoft
+ */
+export const initiateMicrosoftOAuthController = async (req, res) => {
+  try {
+    const hotelId = req.user?.hotelId || req.query.hotelId || req.headers['x-hotel-id'] || 'hotel-mercier';
+    const redirectBack = req.query.redirectBack || '/onboarding';
+
+    const callerFrontend = getFrontendBaseUrl(req);
+    const authUrl = microsoftClient.getMicrosoftOAuthUrl(hotelId, redirectBack, callerFrontend);
+
+    if (req.query.redirect === 'true' || req.query.mode === 'redirect') {
+      return res.redirect(authUrl);
+    }
+
+    return successResponse(res, { url: authUrl, hotelId }, 'Microsoft OAuth URL generated');
+  } catch (err) {
+    return errorResponse(res, err.message, 500);
+  }
+};
+
+/**
+ * Controller to handle Microsoft OAuth callback, exchange authorization code, and persist tokens
+ * Endpoint: GET /api/email/oauth/microsoft/callback
+ */
+export const microsoftOAuthCallbackController = async (req, res) => {
+  const { code, state, error, error_description } = req.query;
+
+  // Cryptographically verify signed HMAC state token
+  const stateCheck = verifyOAuthState(state);
+  const frontendUrl = (stateCheck.valid && stateCheck.payload?.frontendOrigin)
+    ? stateCheck.payload.frontendOrigin
+    : getFrontendBaseUrl(req);
+
+  // If user denied access or Microsoft reported an error
+  if (error) {
+    const errorMsg = error_description || error || 'Access denied by user';
+    return res.redirect(`${frontendUrl}/onboarding?oauth_status=error&message=${encodeURIComponent(errorMsg)}`);
+  }
+
+  if (!code || !state) {
+    return res.redirect(`${frontendUrl}/onboarding?oauth_status=error&message=${encodeURIComponent('Missing authorization code or state parameter')}`);
+  }
+
+  if (!stateCheck.valid || !stateCheck.payload?.hotelId) {
+    return res.redirect(`${frontendUrl}/onboarding?oauth_status=error&message=${encodeURIComponent(stateCheck.error || 'Invalid or expired OAuth state')}`);
+  }
+
+  const { hotelId, redirectBack = '/onboarding' } = stateCheck.payload;
+
+  try {
+    // 1. Exchange authorization code for Microsoft tokens
+    const tokens = await microsoftClient.exchangeCodeForTokens(code);
+
+    // 2. Fetch authenticated Microsoft profile (/me)
+    const profile = await microsoftClient.getAuthenticatedMicrosoftProfile(tokens.accessToken);
+    const emailAddress = profile.mail || profile.userPrincipalName;
+
+    if (!emailAddress) {
+      throw new Error('Could not retrieve email address from Microsoft Graph /me profile');
+    }
+
+    // 3. Encrypt tokens before storing
+    const encryptedAccessToken = encryptToken(tokens.accessToken);
+    const encryptedRefreshToken = tokens.refreshToken ? encryptToken(tokens.refreshToken) : null;
+    const expiryDate = new Date(Date.now() + tokens.expiresIn * 1000);
+
+    // Automatic Re-linking: Clean up previous hotel binding for this email if linked elsewhere
+    await prisma.emailIntegration.deleteMany({
+      where: {
+        email: emailAddress,
+        hotelId: { not: hotelId },
+      },
+    }).catch(() => {});
+
+    // 4. Update / Upsert EmailIntegration record scoped strictly to hotelId
+    await prisma.emailIntegration.upsert({
+      where: { hotelId },
+      create: {
+        hotelId,
+        email: emailAddress,
+        provider: 'microsoft',
+        accessToken: encryptedAccessToken,
+        refreshToken: encryptedRefreshToken,
+        tokenExpiry: expiryDate,
+        scope: tokens.scope,
+        status: 'connected',
+      },
+      update: {
+        email: emailAddress,
+        provider: 'microsoft',
+        accessToken: encryptedAccessToken,
+        ...(encryptedRefreshToken ? { refreshToken: encryptedRefreshToken } : {}),
+        tokenExpiry: expiryDate,
+        scope: tokens.scope,
+        status: 'connected',
+        lastError: null,
+      },
+    });
+
+    // 5. Update Hotel table email & onboarding step
+    let hotel = await prisma.hotel.findUnique({ where: { id: hotelId } });
+    if (!hotel && hotelId === 'hotel-mercier') {
+      hotel = await prisma.hotel.findFirst();
+    }
+    if (hotel) {
+      let stepsDone = ['profile'];
+      if (hotel.onboardingSteps) {
+        try {
+          stepsDone = JSON.parse(hotel.onboardingSteps);
+        } catch {
+          stepsDone = ['profile'];
+        }
+      }
+      if (!stepsDone.includes('email')) {
+        stepsDone.push('email');
+      }
+      await prisma.hotel.update({
+        where: { id: hotel.id },
+        data: {
+          email: emailAddress,
+          onboardingSteps: JSON.stringify(stepsDone),
+        },
+      });
+    }
+
+    // 6. Log Activity Feed
+    await prisma.activityItem.create({
+      data: {
+        id: `act-${Date.now()}`,
+        hotelId,
+        at: new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
+        kind: 'room',
+        text: `Microsoft 365 mailbox connected: ${emailAddress}`,
+        meta: 'Setup Wizard',
+      },
+    }).catch(() => {});
+
+    const targetUrl = redirectBack.startsWith('/') ? redirectBack : `/${redirectBack}`;
+    return res.redirect(`${frontendUrl}${targetUrl}?oauth_status=success&email=${encodeURIComponent(emailAddress)}&provider=microsoft`);
+  } catch (err) {
+    console.error('[Microsoft OAuth Callback Error]:', err.message);
+    return res.redirect(`${frontendUrl}/onboarding?oauth_status=error&message=${encodeURIComponent(err.message)}`);
+  }
+};
+
+/**
+ * Controller to trigger Microsoft 365 inbox synchronization
+ * Endpoint: POST /api/email/sync/microsoft
+ */
+export const syncMicrosoftController = async (req, res) => {
+  try {
+    const hotelId = req.user?.hotelId || req.headers['x-hotel-id'] || req.body?.hotelId || 'hotel-mercier';
+    const maxResults = parseInt(req.body?.maxResults, 10) || 10;
+    const result = await emailService.syncHotelMicrosoftInbox(hotelId, maxResults);
+    return successResponse(res, result, 'Microsoft inbox synced successfully');
+  } catch (error) {
+    return errorResponse(res, error.message, error.statusCode || 500);
+  }
+};
+
+/**
+ * Controller to test Microsoft 365 connection and token validity
+ * Endpoint: POST /api/email/test-connection/microsoft
+ */
+export const testMicrosoftConnectionController = async (req, res) => {
+  try {
+    const hotelId = req.user?.hotelId || req.headers['x-hotel-id'] || req.body?.hotelId || 'hotel-mercier';
+    const result = await microsoftClient.testConnection(hotelId);
+    if (!result.ok) {
+      return errorResponse(res, result.error || 'Microsoft connection test failed', 400);
+    }
+    return successResponse(res, result, 'Microsoft connection verified successfully');
+  } catch (error) {
+    return errorResponse(res, error.message, 500);
+  }
+};
+
