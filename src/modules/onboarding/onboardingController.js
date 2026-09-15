@@ -457,6 +457,7 @@ export const saveOnboardingStep = async (req, res, next) => {
     }
 
     // Handle Step 7: Invite Users (User Upsert + Brevo Transactional Email Dispatch)
+    // Handle Step 7: Invite Users (User Upsert + Brevo Transactional Email Dispatch)
     if (stepKey === 'users') {
       try {
         const inviteEmail = data?.email || data?.address;
@@ -476,7 +477,18 @@ export const saveOnboardingStep = async (req, res, next) => {
 
           const userTitle = roleTitleMap[inviteRole] || 'Staff Member';
           const isWhatsappRole = inviteRole === 'housekeeping' || inviteRole === 'maintenance';
-          const defaultHash = bcrypt.hashSync('demo-access', 10);
+
+          // Multi-tenant isolation check: do not overwrite user belonging to another hotel
+          const existingUser = await prisma.user.findUnique({
+            where: { email: inviteEmail.toLowerCase() },
+          });
+          if (existingUser && existingUser.hotelId !== hotelId) {
+            return errorResponse(res, `User with email ${inviteEmail} is already registered with another property`, 409);
+          }
+
+          // Generate a unique temporary password instead of a shared static string
+          const tempPassword = `Hx-${Math.random().toString(36).slice(2, 8).toUpperCase()}!${Math.floor(100 + Math.random() * 900)}`;
+          const defaultHash = bcrypt.hashSync(tempPassword, 10);
 
           // 1. Physically Upsert User Record into MySQL Database scoped to hotelId
           await prisma.user.upsert({
@@ -500,7 +512,7 @@ export const saveOnboardingStep = async (req, res, next) => {
             },
           });
 
-          // 2. Dispatch Invitation Email
+          // 2. Dispatch Invitation Email with generated temporary password
           await sendBrevoInvitationEmail({
             toEmail: inviteEmail.toLowerCase(),
             toName: formattedName,
@@ -508,7 +520,7 @@ export const saveOnboardingStep = async (req, res, next) => {
             title: userTitle,
             hotelName: hotel?.name || 'Hotelogx Connect',
             loginUrl: 'http://localhost:5173/login',
-            temporaryPassword: 'demo-access',
+            temporaryPassword: tempPassword,
           });
 
           // 3. Log Activity Feed Entry in MySQL
@@ -525,6 +537,43 @@ export const saveOnboardingStep = async (req, res, next) => {
         }
       } catch (userErr) {
         console.warn('[Onboarding Users Warning]', userErr.message);
+      }
+    }
+
+    // Handle Step 8: AI Rules & Mode Persistence
+    if (stepKey === 'ai' && data) {
+      try {
+        if (data.aiMode) {
+          await prisma.hotel.update({
+            where: { id: hotel?.id || hotelId },
+            data: { aiMode: data.aiMode },
+          }).catch(() => {});
+        }
+        if (Array.isArray(data.rules)) {
+          for (const r of data.rules) {
+            if (!r.topic || !r.mode) continue;
+            await prisma.aiRule.upsert({
+              where: {
+                hotelId_topic: {
+                  hotelId: hotel?.id || hotelId,
+                  topic: r.topic,
+                },
+              },
+              update: {
+                mode: r.mode,
+                note: r.note || '',
+              },
+              create: {
+                hotelId: hotel?.id || hotelId,
+                topic: r.topic,
+                mode: r.mode,
+                note: r.note || '',
+              },
+            }).catch(() => {});
+          }
+        }
+      } catch (aiErr) {
+        console.warn('[Onboarding AI Step Warning]:', aiErr.message);
       }
     }
 

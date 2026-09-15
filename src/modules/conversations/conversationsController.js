@@ -1,6 +1,7 @@
 import { prisma } from '../../config/database.js';
 import { errorResponse, successResponse } from '../../utils/response.js';
 import { emailService } from '../email/emailService.js';
+import { sendMetaWhatsAppMessage } from '../whatsapp/whatsappController.js';
 
 export const getConversations = async (req, res, next) => {
   try {
@@ -51,8 +52,14 @@ export const getConversations = async (req, res, next) => {
         channels: c.primaryChannel ? [c.primaryChannel] : ['whatsapp'],
         knowledgeUsed: JSON.parse(c.knowledgeUsed || '[]'),
         upsellIdeas: JSON.parse(c.upsellIdeas || '[]'),
-        taskIds: JSON.parse(c.taskIds || '[]'),
-        escalation: c.escalation ? JSON.parse(c.escalation) : undefined,
+        escalation: (() => {
+          if (!c.escalation) return undefined;
+          try {
+            return JSON.parse(c.escalation);
+          } catch {
+            return undefined;
+          }
+        })(),
         guest: {
           ...c.guest,
           tags: JSON.parse(c.guest?.tags || '[]'),
@@ -118,7 +125,14 @@ export const getConversationById = async (req, res, next) => {
       knowledgeUsed: JSON.parse(conversation.knowledgeUsed || '[]'),
       upsellIdeas: JSON.parse(conversation.upsellIdeas || '[]'),
       taskIds: JSON.parse(conversation.taskIds || '[]'),
-      escalation: conversation.escalation ? JSON.parse(conversation.escalation) : undefined,
+      escalation: (() => {
+        if (!conversation.escalation) return undefined;
+        try {
+          return JSON.parse(conversation.escalation);
+        } catch {
+          return undefined;
+        }
+      })(),
       guest: {
         ...conversation.guest,
         tags: JSON.parse(conversation.guest?.tags || '[]'),
@@ -180,6 +194,7 @@ export const sendReply = async (req, res, next) => {
       data: {
         lastAt: timeStr,
         aiStatus: 'human-takeover',
+        suggestedReply: '',
         unread: 0,
       },
     });
@@ -192,20 +207,27 @@ export const sendReply = async (req, res, next) => {
           toEmail = conv.guest.email;
         } else if (conv.subject && conv.subject.includes('@')) {
           toEmail = conv.subject;
-        } else {
-          toEmail = 'yashuchoudhary.com@gmail.com';
         }
       }
-      emailService.sendGuestEmail({
-        hotelId,
-        conversationId: id,
-        toEmail,
-        subject: conv.subject || 'Message from Hotel Reception',
-        text: body,
-        author: 'staff',
-      }).catch((err) => {
-        console.warn('[SendReply Outbound Email Warning]:', err.message);
-      });
+      if (toEmail) {
+        emailService.sendGuestEmail({
+          hotelId,
+          conversationId: id,
+          toEmail,
+          subject: conv.subject || 'Message from Hotel Reception',
+          text: body,
+          author: 'staff',
+        }).catch((err) => {
+          console.warn('[SendReply Outbound Email Warning]:', err.message);
+        });
+      }
+    } else if (targetChannel === 'whatsapp') {
+      const guestPhone = conv.guest?.phone;
+      if (guestPhone) {
+        sendMetaWhatsAppMessage(guestPhone, body, [], hotelId).catch((err) => {
+          console.warn('[SendReply Outbound WhatsApp Warning]:', err.message);
+        });
+      }
     }
 
     await prisma.activityItem.create({

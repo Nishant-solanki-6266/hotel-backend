@@ -301,7 +301,7 @@ export const handleAction = async (req, res, next) => {
             id: `wam-${Date.now()}`,
             threadId,
             from: 'staff',
-            text: label || 'Action confirmed',
+            body: label || 'Action confirmed',
             at: timeStr,
           },
         }).catch(() => {});
@@ -488,7 +488,7 @@ export const handleWebhook = async (req, res) => {
             id: `wam-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
             threadId: staffThread.id,
             from: 'staff',
-            text: msgText,
+            body: msgText,
             at: timeStr,
           },
         }).catch(() => {});
@@ -641,7 +641,7 @@ export const handleWebhook = async (req, res) => {
 
         const resNumber = `RES-${hotelId}-${roomNum}`;
         reservation = await prisma.reservation.upsert({
-          where: { number: resNumber },
+          where: { hotelId_number: { hotelId, number: resNumber } },
           create: {
             number: resNumber,
             hotelId,
@@ -663,7 +663,7 @@ export const handleWebhook = async (req, res) => {
       } else {
         const resNumber = `ENQ-${hotelId}-${guest.id.slice(-4).toUpperCase()}`;
         reservation = await prisma.reservation.upsert({
-          where: { number: resNumber },
+          where: { hotelId_number: { hotelId, number: resNumber } },
           create: {
             number: resNumber,
             hotelId,
@@ -770,8 +770,9 @@ export const handleWebhook = async (req, res) => {
       currentTaskIds.push(aiResult.task.id);
     }
 
+    const isEscalated = Boolean(aiResult?.escalation || aiResult?.aiStatus === 'escalated');
     const requiresApproval = Boolean(aiResult?.requiresApproval);
-    const convAiStatus = requiresApproval ? 'human-takeover' : 'ai-handling';
+    const convAiStatus = isEscalated ? 'escalated' : (requiresApproval ? 'human-takeover' : 'ai-handling');
     const upsellIdeas = aiResult?.upsellIdeas || [];
 
     // Update conversation with dynamic AI reply and metadata
@@ -814,7 +815,7 @@ export const handleWebhook = async (req, res) => {
       channels: ['whatsapp'],
       primaryChannel: 'whatsapp',
       aiStatus: convAiStatus,
-      sentiment: aiResult?.escalation ? 'negative' : 'neutral',
+      sentiment: isEscalated ? 'frustrated' : 'neutral',
       subject: `WhatsApp Chat with ${guest.name}`,
       summary: `"${msgText.slice(0, 100)}"`,
       suggestedReply: aiSuggestedReply,

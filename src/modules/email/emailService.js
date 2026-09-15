@@ -309,8 +309,9 @@ export const emailService = {
       currentTaskIds.push(aiResult.task.id);
     }
 
+    const isEscalated = Boolean(aiResult?.escalation || aiResult?.aiStatus === 'escalated');
     const requiresApproval = Boolean(aiResult?.requiresApproval);
-    const convAiStatus = requiresApproval ? 'human-takeover' : 'ai-handling';
+    const convAiStatus = isEscalated ? 'escalated' : (requiresApproval ? 'human-takeover' : 'ai-handling');
     const upsellIdeas = aiResult?.upsellIdeas || [];
 
     // Update conversation with dynamic AI reply and metadata
@@ -348,7 +349,7 @@ export const emailService = {
       channels: ['email'],
       primaryChannel: 'email',
       aiStatus: convAiStatus,
-      sentiment: aiResult?.escalation ? 'negative' : 'neutral',
+      sentiment: isEscalated ? 'frustrated' : 'neutral',
       subject,
       summary: `"${textBody.slice(0, 100)}"`,
       suggestedReply: aiSuggestedReply,

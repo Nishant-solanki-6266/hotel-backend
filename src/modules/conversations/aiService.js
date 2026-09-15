@@ -24,7 +24,7 @@ const HOUSEKEEPING_PATTERNS = [
   { regex: /\b(toiletries|shampoo|conditioner|soap|body wash|shower gel)\b/i, item: 'Toiletries replenishment', priority: 'Normal' },
   { regex: /\b(dental kit|toothbrush|toothpaste|shaving kit|razor)\b/i, item: 'Dental / vanity kit', priority: 'Normal' },
   { regex: /\b(slipper|slippers|bathrobe|robe)\b/i, item: 'Bathrobes & slippers', priority: 'Normal' },
-  { regex: /\b(water|water bottle|bottles of water|drinking water)\b/i, item: 'Complimentary water bottles', priority: 'Normal' },
+  { regex: /\b(water bottle|bottles of water|drinking water)\b/i, item: 'Complimentary water bottles', priority: 'Normal' },
   { regex: /\b(iron|ironing board|steamer)\b/i, item: 'Iron & ironing board', priority: 'Normal' },
   { regex: /\b(clean|cleaning|clean my room|housekeeping|make up room|service room)\b/i, item: 'Room cleaning service', priority: 'High' },
   { regex: /\b(trash|rubbish|garbage|empty bin|bin)\b/i, item: 'Trash clearance', priority: 'Normal' },
@@ -36,10 +36,11 @@ const HOUSEKEEPING_PATTERNS = [
  */
 const MAINTENANCE_PATTERNS = [
   { regex: /\b(ac|air condition|air conditioner|heating|hvac|thermostat|cold|hot)\b/i, issue: 'AC / Climate control issue' },
-  { regex: /\b(leak|leaking|tap|faucet|drain|clogged|plumbing|flush|toilet)\b/i, issue: 'Plumbing / leak issue' },
+  { regex: /\b(leak|leaking|tap|faucet|drain|clogged|plumbing|flush|toilet|pipe|shower)\b/i, issue: 'Plumbing / leak issue' },
   { regex: /\b(tv|television|remote|channels|wifi|internet|connection)\b/i, issue: 'TV / Media connectivity issue' },
   { regex: /\b(light|bulb|lamp|electricity|power|socket|plug)\b/i, issue: 'Electrical / lighting issue' },
   { regex: /\b(lock|key|keycard|safe|door)\b/i, issue: 'Door lock / in-room safe issue' },
+  { regex: /\b(broken|damage|damaged|not working|repair|fix)\b/i, issue: 'General maintenance / repair' },
 ];
 
 /**
@@ -316,7 +317,7 @@ export async function evaluateAiPolicy({ hotelId, messageText, guest, intentType
       topic: 'Safety issues',
       mode,
       requiresApproval: true,
-      escalate: mode === 'Always Escalate',
+      escalate: true,
       escalationReason: 'Safety or emergency reported by guest',
     };
   }
@@ -328,7 +329,7 @@ export async function evaluateAiPolicy({ hotelId, messageText, guest, intentType
       topic: 'Refunds',
       mode,
       requiresApproval: true,
-      escalate: mode === 'Always Escalate',
+      escalate: true,
       escalationReason: 'Guest requested refund or compensation',
     };
   }
@@ -338,20 +339,20 @@ export async function evaluateAiPolicy({ hotelId, messageText, guest, intentType
       topic: 'Billing disputes',
       mode,
       requiresApproval: true,
-      escalate: mode === 'Always Escalate',
+      escalate: true,
       escalationReason: 'Billing dispute / folio issue',
     };
   }
 
   // 3. Complaints
-  if (/\b(complaint|unacceptable|terrible|horrible|awful|disgusted|furious|manager|speak with manager|demand|ruined)\b/i.test(text)) {
-    const mode = getTopicMode('Complaints', 'Human Approval');
+  if (/\b(complaint|unacceptable|terrible|horrible|awful|disgusted|furious|manager|speak with manager|demand|ruined|bad service|worst)\b/i.test(text)) {
+    const mode = getTopicMode('Complaints', 'Always Escalate');
     return {
       topic: 'Complaints',
       mode,
-      requiresApproval: mode !== 'Autonomous',
-      escalate: mode === 'Always Escalate',
-      escalationReason: mode === 'Always Escalate' ? 'Guest dissatisfaction / complaint' : undefined,
+      requiresApproval: true,
+      escalate: true,
+      escalationReason: 'Guest dissatisfaction / complaint',
     };
   }
 
@@ -494,14 +495,112 @@ export async function processGuestMessageAI({
           lastAt: timeStr,
         },
       });
-    } catch (_) {}
+    } catch (_) { }
   }
 
   // 1. Retrieve RAG Knowledge context strictly for this hotel
   const rag = await retrieveRelevantKnowledge(effectiveHotelId, messageText);
   const hotelName = rag.hotelProfile?.name || 'Hotel Front Desk';
 
-  // 2. Check for Housekeeping Intent
+  // 2. Check for Maintenance Intent (Checked first so leaks, broken pipes, AC issues are prioritized over routine housekeeping)
+  for (const pattern of MAINTENANCE_PATTERNS) {
+    if (pattern.regex.test(messageText)) {
+      const policy = await evaluateAiPolicy({
+        hotelId: effectiveHotelId,
+        messageText,
+        guest,
+        intentType: 'maintenance',
+      });
+
+      const issueTitle = `${pattern.issue} in Room ${room}`;
+      const issueId = `MT-${Date.now().toString().slice(-4)}`;
+      const taskId = `t-${Date.now()}`;
+
+      // Create Task for Maintenance
+      const task = await prisma.task.create({
+        data: {
+          id: taskId,
+          hotelId: effectiveHotelId,
+          title: `Inspect ${pattern.issue} — Room ${room}`,
+          detail: `Reported by ${guestName} via ${channel}: "${messageText.trim()}"`,
+          room,
+          guest: guestName,
+          department: 'Maintenance',
+          priority: 'High',
+          status: 'New',
+          createdAt: timeStr,
+          due: getDueTime(20),
+          source: 'AI Detection',
+          conversationId,
+          trail: {
+            create: [
+              {
+                at: timeStr,
+                text: `Automated AI Task created for Maintenance (${issueId})`,
+                via: 'ai',
+              },
+            ],
+          },
+        },
+      }).catch(() => null);
+
+      let aiReplyBody = await generateWithGemini({
+        prompt: `A hotel guest (${guestName}, Room ${room}) reported an issue: "${messageText}". Write a polite, empathetic, concise 2-sentence hotel reply apologizing for the inconvenience and stating that our maintenance team has been notified and a technician is heading to their room.`,
+        systemInstruction: `You are the AI Front Desk assistant for ${hotelName}. Be warm, professional, concise, and helpful. Do not use placeholders.`,
+      });
+
+      if (!aiReplyBody) {
+        aiReplyBody = `I apologize for the inconvenience regarding the ${pattern.issue.toLowerCase()} in Room ${room}. Our engineering team has been alerted immediately and a technician will visit your room shortly.`;
+      }
+
+      if (policy.requiresApproval) {
+        return {
+          handled: true,
+          requiresApproval: true,
+          aiStatus: policy.escalate ? 'escalated' : 'human-takeover',
+          type: 'maintenance',
+          task,
+          replyText: aiReplyBody,
+          suggestedReply: aiReplyBody,
+          upsellIdeas: detectedUpsells,
+          policy,
+          escalation: policy.escalate ? {
+            reason: policy.escalationReason || 'Policy escalation',
+            urgency: policy.topic === 'Safety issues' ? 'Urgent' : 'High',
+            raisedAt: timeStr,
+            suggested: aiReplyBody,
+          } : null,
+        };
+      }
+
+      const aiMsg = await prisma.message.create({
+        data: {
+          id: `m-${Date.now()}`,
+          conversationId,
+          author: 'ai',
+          channel,
+          body: aiReplyBody,
+          at: timeStr,
+          confidence: 0.96,
+        },
+      });
+
+      return {
+        handled: true,
+        requiresApproval: false,
+        aiStatus: 'ai-handling',
+        type: 'maintenance',
+        task,
+        message: aiMsg,
+        replyText: aiReplyBody,
+        suggestedReply: aiReplyBody,
+        upsellIdeas: detectedUpsells,
+        policy,
+      };
+    }
+  }
+
+  // 3. Check for Housekeeping Intent
   for (const pattern of HOUSEKEEPING_PATTERNS) {
     if (pattern.regex.test(messageText)) {
       const policy = await evaluateAiPolicy({
@@ -574,7 +673,7 @@ export async function processGuestMessageAI({
           text: `AI created task for Housekeeping: "${itemTitle}"`,
           meta: `Room ${room}`,
         },
-      }).catch(() => {});
+      }).catch(() => { });
 
       let aiReplyBody = await generateWithGemini({
         prompt: `A hotel guest (${guestName}, Room ${room}) sent this message: "${messageText}". Write a polite, warm, concise 2-sentence hotel reply letting them know we have dispatched housekeeping with their ${pattern.item.toLowerCase()} right away.`,
@@ -589,14 +688,19 @@ export async function processGuestMessageAI({
         return {
           handled: true,
           requiresApproval: true,
-          aiStatus: 'human-takeover',
+          aiStatus: policy.escalate ? 'escalated' : 'human-takeover',
           type: 'housekeeping',
           task,
           replyText: aiReplyBody,
           suggestedReply: aiReplyBody,
           upsellIdeas: detectedUpsells,
           policy,
-          escalation: policy.escalate ? { reason: policy.escalationReason || 'Policy escalation', at: timeStr } : null,
+          escalation: policy.escalate ? {
+            reason: policy.escalationReason || 'Policy escalation',
+            urgency: policy.topic === 'Safety issues' ? 'Urgent' : 'High',
+            raisedAt: timeStr,
+            suggested: aiReplyBody,
+          } : null,
         };
       }
 
@@ -618,99 +722,6 @@ export async function processGuestMessageAI({
         requiresApproval: false,
         aiStatus: 'ai-handling',
         type: 'housekeeping',
-        task,
-        message: aiMsg,
-        replyText: aiReplyBody,
-        suggestedReply: aiReplyBody,
-        upsellIdeas: detectedUpsells,
-        policy,
-      };
-    }
-  }
-
-  // 3. Check for Maintenance Intent
-  for (const pattern of MAINTENANCE_PATTERNS) {
-    if (pattern.regex.test(messageText)) {
-      const policy = await evaluateAiPolicy({
-        hotelId: effectiveHotelId,
-        messageText,
-        guest,
-        intentType: 'maintenance',
-      });
-
-      const issueTitle = `${pattern.issue} in Room ${room}`;
-      const issueId = `MT-${Date.now().toString().slice(-4)}`;
-      const taskId = `t-${Date.now()}`;
-
-      // Create Task for Maintenance
-      const task = await prisma.task.create({
-        data: {
-          id: taskId,
-          hotelId: effectiveHotelId,
-          title: `Inspect ${pattern.issue} — Room ${room}`,
-          detail: `Reported by ${guestName} via ${channel}: "${messageText.trim()}"`,
-          room,
-          guest: guestName,
-          department: 'Maintenance',
-          priority: 'High',
-          status: 'New',
-          createdAt: timeStr,
-          due: getDueTime(20),
-          source: 'AI Detection',
-          conversationId,
-          trail: {
-            create: [
-              {
-                at: timeStr,
-                text: `Automated AI Task created for Maintenance (${issueId})`,
-                via: 'ai',
-              },
-            ],
-          },
-        },
-      }).catch(() => null);
-
-      let aiReplyBody = await generateWithGemini({
-        prompt: `A hotel guest (${guestName}, Room ${room}) reported an issue: "${messageText}". Write a polite, empathetic, concise 2-sentence hotel reply apologizing for the inconvenience and stating that our maintenance team has been notified and a technician is heading to their room.`,
-        systemInstruction: `You are the AI Front Desk assistant for ${hotelName}. Be warm, professional, concise, and helpful. Do not use placeholders.`,
-      });
-
-      if (!aiReplyBody) {
-        aiReplyBody = `I apologize for the inconvenience regarding the ${pattern.issue.toLowerCase()} in Room ${room}. Our engineering team has been alerted immediately and a technician will visit your room shortly.`;
-      }
-
-      if (policy.requiresApproval) {
-        return {
-          handled: true,
-          requiresApproval: true,
-          aiStatus: 'human-takeover',
-          type: 'maintenance',
-          task,
-          replyText: aiReplyBody,
-          suggestedReply: aiReplyBody,
-          upsellIdeas: detectedUpsells,
-          policy,
-          escalation: policy.escalate ? { reason: policy.escalationReason || 'Policy escalation', at: timeStr } : null,
-        };
-      }
-
-      const aiMsg = await prisma.message.create({
-        data: {
-          id: `m-${Date.now()}`,
-          conversationId,
-          author: 'ai',
-          channel,
-          body: aiReplyBody,
-          at: timeStr,
-          confidence: 0.96,
-        },
-      });
-
-      return {
-        handled: true,
-        requiresApproval: false,
-        aiStatus: 'ai-handling',
-        type: 'maintenance',
         task,
         message: aiMsg,
         replyText: aiReplyBody,
@@ -752,13 +763,18 @@ Write a polite, warm 2-3 sentence response confirming availability, mentioning s
       return {
         handled: true,
         requiresApproval: true,
-        aiStatus: 'human-takeover',
+        aiStatus: policy.escalate ? 'escalated' : 'human-takeover',
         type: 'pms_availability',
         replyText: aiReplyBody,
         suggestedReply: aiReplyBody,
         upsellIdeas: detectedUpsells,
         policy,
-        escalation: policy.escalate ? { reason: policy.escalationReason || 'Policy escalation', at: timeStr } : null,
+        escalation: policy.escalate ? {
+          reason: policy.escalationReason || 'Policy escalation',
+          urgency: policy.topic === 'Safety issues' ? 'Urgent' : 'High',
+          raisedAt: timeStr,
+          suggested: aiReplyBody,
+        } : null,
       };
     }
 
@@ -845,21 +861,26 @@ Write a polite, accurate, concise 1-3 sentence response directly answering their
           lastAt: timeStr,
         },
       });
-    } catch (_) {}
+    } catch (_) { }
   }
 
   if (policy.requiresApproval) {
     return {
       handled: true,
       requiresApproval: true,
-      aiStatus: 'human-takeover',
+      aiStatus: policy.escalate ? 'escalated' : 'human-takeover',
       type: rag.docNames.length > 0 ? 'knowledge_rag' : 'general',
       replyText,
       suggestedReply: replyText,
       knowledgeUsed: rag.docNames,
       upsellIdeas: detectedUpsells,
       policy,
-      escalation: policy.escalate ? { reason: policy.escalationReason || 'Policy escalation', at: timeStr } : null,
+      escalation: policy.escalate ? {
+        reason: policy.escalationReason || 'Policy escalation',
+        urgency: policy.topic === 'Safety issues' ? 'Urgent' : 'High',
+        raisedAt: timeStr,
+        suggested: replyText,
+      } : null,
     };
   }
 
@@ -877,17 +898,21 @@ Write a polite, accurate, concise 1-3 sentence response directly answering their
   });
 
   if (channel === 'email') {
-    const toEmail = conversation.guest?.email || (conversation.subject && conversation.subject.includes('@') ? conversation.subject : 'yashuchoudhary.com@gmail.com');
-    emailService.sendGuestEmail({
-      hotelId: effectiveHotelId,
-      conversationId,
-      toEmail,
-      subject: conversation.subject || 'Message from Hotel Reception',
-      text: replyText,
-      author: 'ai',
-    }).catch((err) => {
-      console.warn('[AI Service Outbound Email Warning]:', err.message);
-    });
+    const toEmail = conversation.guest?.email || (conversation.subject && conversation.subject.includes('@') ? conversation.subject : null);
+    if (toEmail) {
+      emailService.sendGuestEmail({
+        hotelId: effectiveHotelId,
+        conversationId,
+        toEmail,
+        subject: conversation.subject || 'Message from Hotel Reception',
+        text: replyText,
+        author: 'ai',
+      }).catch((err) => {
+        console.warn('[AI Service Outbound Email Warning]:', err.message);
+      });
+    } else {
+      console.warn(`[AI Service] No recipient email found for conversation ${conversationId}, skipping outbound email`);
+    }
   }
 
   return {

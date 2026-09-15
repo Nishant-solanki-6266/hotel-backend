@@ -484,7 +484,7 @@ export const pmsService = {
           const assignedCust = assignedRes?.CustomerId ? masterGuestMap.get(assignedRes.CustomerId) : null;
 
           let arrivalTime = null;
-          let guestStatus = room.IsOccupied ? 'In-House' : 'Vacant';
+          let guestStatus = room.IsOccupied ? 'Occupied' : 'Vacant';
           const vip = Boolean(assignedCust?.vip);
           const priority = vip ? 'High' : 'Normal';
           const note = null;
@@ -506,10 +506,10 @@ export const pmsService = {
                 arrivalTime = new Date(startIso).toISOString().slice(11, 16);
               }
               if (resState === 'Started' || resState === 'In House') {
-                guestStatus = 'In-House';
+                guestStatus = 'Occupied';
               }
             } else if (resState === 'Started' || resState === 'In House') {
-              guestStatus = 'In-House';
+              guestStatus = 'Occupied';
             }
           }
 
@@ -581,59 +581,9 @@ export const pmsService = {
         }).catch(() => { });
       }
 
-      // STAGE 5: Bulk Multi-Row SQL Query 5 -> MEWS SERVICES & UPSELL CATALOGUE
+      // STAGE 5: MEWS SERVICES PROCESSED (Preserve real guest upsells; no synthetic records)
       if (mewsServices.length > 0) {
-        const validServices = mewsServices.filter((s) => s?.Id && s?.Name);
-        if (validServices.length > 0) {
-          const guestArray = guestList.length > 0 ? guestList : [{ name: 'Hotel Guest', room: '101' }];
-          const roomNumbers = roomList.map(([num]) => num);
-
-          const upsellTuples = validServices.map((srv, idx) => {
-            const upsellId = `upsell-${targetHotelId}-${srv.Id.slice(0, 8)}-${idx}`;
-            const numVal = Number(srv.PromotionalAmount?.Amount || srv.Amount?.Amount || 25.0);
-            const val = isNaN(numVal) ? 25.0 : numVal;
-            const assignedGuest = guestArray[idx % guestArray.length];
-            const guestName = assignedGuest?.name || 'Hotel Guest';
-            const assignedRoom = assignedGuest?.room || roomNumbers[idx % Math.max(roomNumbers.length, 1)] || '101';
-            const channel = idx % 3 === 0 ? 'email' : 'whatsapp';
-
-            // Realistic operational distribution matching UI contract:
-            let status = 'Accepted';
-            if (idx % 6 === 0) {
-              status = 'Declined';
-            } else if (idx % 8 === 0) {
-              status = 'Expired';
-            } else if (idx % 2 === 1) {
-              status = 'Sent';
-            } else {
-              status = 'Accepted';
-            }
-
-            const hour = String(7 + (idx % 6)).padStart(2, '0');
-            const minute = String((idx * 7) % 60).padStart(2, '0');
-            const dateStr = `Today ${hour}:${minute}`;
-
-            return `(${sqlStr(upsellId)}, ${sqlStr(targetHotelId)}, ${sqlStr(guestName)}, ${sqlStr(assignedRoom)}, ${sqlStr(srv.Name)}, ${val}, ${sqlStr(channel)}, ${sqlStr(status)}, ${sqlStr(dateStr)})`;
-          }).join(',\n');
-
-          const upsellSql = `
-            INSERT INTO Upsell (id, hotelId, guest, room, offer, value, channel, status, date)
-            VALUES ${upsellTuples}
-            ON DUPLICATE KEY UPDATE
-              hotelId = VALUES(hotelId),
-              guest = VALUES(guest),
-              room = VALUES(room),
-              offer = VALUES(offer),
-              value = VALUES(value),
-              channel = VALUES(channel),
-              status = VALUES(status),
-              date = VALUES(date)
-          `;
-          await prisma.$executeRawUnsafe(upsellSql).catch((e) => {
-            console.warn('[PmsService] Upsell bulk SQL error:', e.message);
-          });
-          upsellsSynced = validServices.length;
-        }
+        console.log(`[PmsService] Synced ${mewsServices.length} Mews service offerings for hotel ${targetHotelId}`);
       }
 
       // STAGE 6: Update Integration Status & Emit Real-Time SSE
