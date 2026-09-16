@@ -105,7 +105,7 @@ export const sendMetaWhatsAppMessage = async (toPhone, text, buttons = [], hotel
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(3000),
+      signal: AbortSignal.timeout(10000),
     });
 
     const data = await response.json().catch(() => ({}));
@@ -391,6 +391,17 @@ export const handleWebhook = async (req, res) => {
       }
 
       if (!hotelId) {
+        // Fallback to configured environment phoneId or WABA ID
+        const envPhoneId = process.env.WHATSAPP_PHONE_NUMBER_ID || process.env.META_PHONE_NUMBER_ID;
+        const envWabaId = process.env.WABA_ID || process.env.META_WABA_ID;
+        if ((metaPhoneNumberId && metaPhoneNumberId === envPhoneId) || (metaWabaId && metaWabaId === envWabaId)) {
+          const primaryHotel = await prisma.hotel.findFirst({ orderBy: { createdAt: 'asc' } }).catch(() => null);
+          hotelId = primaryHotel?.id || 'hotel-mercier';
+          console.log(`[WhatsApp Webhook] Resolved Meta identifier to hotel "${hotelId}" via environment match`);
+        }
+      }
+
+      if (!hotelId) {
         console.warn(`[WhatsApp Webhook] Unmapped Meta identifier (phone_number_id: "${metaPhoneNumberId}", display_phone: "${metaDisplayPhone}", waba: "${metaWabaId}"). Refusing to route to default tenant.`);
         return res.sendStatus(200); // Acknowledge Meta safely to prevent retry loops without cross-tenant pollution
       }
@@ -466,7 +477,7 @@ export const handleWebhook = async (req, res) => {
 
         const resNumber = `RES-${hotelId}-${roomNum}`;
         reservation = await prisma.reservation.upsert({
-          where: { number: resNumber },
+          where: { hotelId_number: { hotelId, number: resNumber } },
           create: {
             number: resNumber,
             hotelId,
@@ -488,7 +499,7 @@ export const handleWebhook = async (req, res) => {
       } else {
         const resNumber = `ENQ-${hotelId}-${guest.id.slice(-4).toUpperCase()}`;
         reservation = await prisma.reservation.upsert({
-          where: { number: resNumber },
+          where: { hotelId_number: { hotelId, number: resNumber } },
           create: {
             number: resNumber,
             hotelId,
