@@ -1,9 +1,11 @@
+import crypto from 'node:crypto';
 import { prisma } from '../../config/database.js';
 import { errorResponse, successResponse } from '../../utils/response.js';
 import { pmsService } from '../pms/pmsService.js';
 import { realtimeService } from '../../services/realtimeService.js';
 import { extractRoomNumber, processGuestMessageAI } from '../conversations/aiService.js';
 import { exchangeMetaCodeForToken } from './whatsappOAuth.js';
+import { decryptToken, verifyOAuthState } from '../../utils/tokenCrypto.js';
 
 /**
  * Helper: Sanitize phone numbers to pure E.164 digits without +, -, or spaces
@@ -33,7 +35,7 @@ export const sendMetaWhatsAppMessage = async (toPhone, text, buttons = [], hotel
         where: { hotelId, status: 'connected' },
       });
       if (integration) {
-        token = integration.accessToken || null;
+        token = integration.accessToken ? decryptToken(integration.accessToken) : null;
         phoneId = integration.phoneNumberId || null;
       }
     } catch (dbErr) {
@@ -110,14 +112,15 @@ export const sendMetaWhatsAppMessage = async (toPhone, text, buttons = [], hotel
 
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      console.warn('[WhatsApp API Warning]', data?.error?.message || response.statusText);
-      return { success: true, simulated: true, warning: data?.error?.message };
+      const errMsg = data?.error?.message || response.statusText;
+      console.warn('[WhatsApp API Error]', errMsg);
+      return { success: false, error: errMsg, status: response.status };
     }
 
     return { success: true, messageId: data?.messages?.[0]?.id };
   } catch (err) {
     console.error('[WhatsApp Network Error]', err.message);
-    return { success: true, simulated: true, error: err.message };
+    return { success: false, error: err.message };
   }
 };
 
@@ -127,8 +130,11 @@ export const sendMetaWhatsAppMessage = async (toPhone, text, buttons = [], hotel
 export const getThreads = async (req, res, next) => {
   try {
     const hotelId = req.user?.hotelId || req.query?.hotelId;
+    if (!hotelId) {
+      return errorResponse(res, 'Hotel context is required', 400);
+    }
     const threads = await prisma.waThread.findMany({
-      where: hotelId ? { hotelId } : undefined,
+      where: { hotelId },
       include: {
         messages: true,
       },
@@ -146,6 +152,7 @@ export const getThreads = async (req, res, next) => {
         } catch {}
         return {
           ...m,
+          body: m.text || m.body || '',
           buttons,
         };
       }),
@@ -340,6 +347,29 @@ export const verifyWebhook = (req, res) => {
  */
 export const handleWebhook = async (req, res) => {
   try {
+    const signature = req.headers['x-hub-signature-256'];
+    const appSecret = process.env.META_APP_SECRET || process.env.WHATSAPP_APP_SECRET;
+
+    if (appSecret && signature) {
+      const hmac = crypto.createHmac('sha256', appSecret);
+      const rawPayload = typeof req.rawBody === 'string' ? req.rawBody : JSON.stringify(req.body || {});
+      const expectedSig = 'sha256=' + hmac.update(rawPayload).digest('hex');
+      try {
+        const sigBuf = Buffer.from(signature);
+        const expBuf = Buffer.from(expectedSig);
+        if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+          console.warn('[WhatsApp Webhook] Invalid X-Hub-Signature-256 signature');
+          return res.status(401).json({ error: 'Invalid webhook signature' });
+        }
+      } catch (sigErr) {
+        console.warn('[WhatsApp Webhook] Signature verification error:', sigErr.message);
+        return res.status(401).json({ error: 'Invalid webhook signature' });
+      }
+    } else if (process.env.NODE_ENV === 'production' && !signature && req.body?.object === 'whatsapp_business_account') {
+      console.warn('[WhatsApp Webhook] Missing X-Hub-Signature-256 header in production');
+      return res.status(401).json({ error: 'Missing webhook signature header' });
+    }
+
     const body = req.body || {};
     let fromPhone = '';
     let senderName = 'Guest';
@@ -431,6 +461,151 @@ export const handleWebhook = async (req, res) => {
     const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
     console.log(`[WhatsApp Inbound] Message for hotel "${hotelId}" from ${senderName} (+${cleanPhone}): "${msgText}"`);
+
+    // A. Check if sender is a Department Staff Member (Housekeeping / Maintenance / Front Office)
+    const staffThread = await prisma.waThread.findFirst({
+      where: {
+        hotelId,
+        OR: [
+          { phone: { contains: cleanPhone.slice(-8) } },
+          { phone: cleanPhone },
+          { phone: `+${cleanPhone}` },
+        ],
+      },
+    }).catch(() => null);
+
+    const staffUser = !staffThread ? await prisma.user.findFirst({
+      where: {
+        hotelId,
+        phone: { not: '' },
+        OR: [
+          { phone: { contains: cleanPhone.slice(-8) } },
+          { phone: cleanPhone },
+          { phone: `+${cleanPhone}` },
+        ],
+      },
+    }).catch(() => null) : null;
+
+    if (staffThread || staffUser) {
+      const staffContact = staffThread?.contact || staffUser?.name || 'Staff Member';
+      const staffDept = staffThread?.department || staffUser?.role || 'Housekeeping';
+      const staffRoom = body.room || extractRoomNumber(msgText);
+      const textLower = msgText.toLowerCase();
+
+      // Log to WaThread if exists
+      if (staffThread) {
+        await prisma.waMessage.create({
+          data: {
+            id: `wam-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            threadId: staffThread.id,
+            from: 'staff',
+            body: msgText,
+            at: timeStr,
+          },
+        }).catch(() => {});
+      }
+
+      // Operational Status Handling
+      if (staffRoom) {
+        const roomRecord = await prisma.room.findFirst({
+          where: { number: staffRoom, hotelId },
+        });
+
+        if (roomRecord) {
+          if (textLower.includes('clean') && !textLower.includes('start')) {
+            await prisma.room.updateMany({
+              where: { number: staffRoom, hotelId },
+              data: { status: 'Clean', cleaner: staffContact, updatedAt: timeStr },
+            });
+            await prisma.task.updateMany({
+              where: { room: staffRoom, hotelId, department: 'Housekeeping', status: { not: 'Completed' } },
+              data: { status: 'Completed' },
+            });
+            pmsService.syncRoomStatusToMews(hotelId, staffRoom, 'Clean').catch(() => {});
+          } else if (textLower.includes('start cleaning') || textLower.includes('cleaning')) {
+            await prisma.room.updateMany({
+              where: { number: staffRoom, hotelId },
+              data: { status: 'Cleaning', cleaner: staffContact, updatedAt: timeStr },
+            });
+          } else if (textLower.includes('maintenance') || textLower.includes('issue') || textLower.includes('leak') || textLower.includes('broken')) {
+            await prisma.room.updateMany({
+              where: { number: staffRoom, hotelId },
+              data: { status: 'Maintenance', note: `Issue reported via WhatsApp: "${msgText}"` },
+            });
+            pmsService.syncRoomStatusToMews(hotelId, staffRoom, 'Maintenance').catch(() => {});
+            await prisma.issue.create({
+              data: {
+                id: `MT-${Date.now().toString().slice(-4)}`,
+                hotelId,
+                room: staffRoom,
+                title: `Issue in Room ${staffRoom}: ${msgText.slice(0, 50)}`,
+                detail: `Reported by ${staffContact} via WhatsApp`,
+                priority: 'High',
+                reportedBy: staffContact,
+                via: 'WhatsApp',
+                createdAt: timeStr,
+                status: 'Open',
+                outOfService: true,
+              },
+            }).catch(() => {});
+          } else if (textLower.includes('dnd') || textLower.includes('do not disturb')) {
+            await prisma.room.updateMany({
+              where: { number: staffRoom, hotelId },
+              data: { status: 'DND', updatedAt: timeStr },
+            });
+          }
+        }
+      }
+
+      if (textLower.includes('delivered') || textLower.includes('done')) {
+        const matchingTask = await prisma.task.findFirst({
+          where: {
+            hotelId,
+            status: { not: 'Completed' },
+            ...(staffRoom ? { room: staffRoom } : {}),
+          },
+          orderBy: { createdAt: 'desc' },
+        });
+
+        if (matchingTask) {
+          await prisma.task.updateMany({
+            where: { id: matchingTask.id, hotelId },
+            data: { status: 'Completed' },
+          });
+          if (matchingTask.conversationId) {
+            await prisma.message.create({
+              data: {
+                id: `m-${Date.now()}`,
+                conversationId: matchingTask.conversationId,
+                author: 'ai',
+                channel: 'whatsapp',
+                body: `Our ${staffDept.toLowerCase()} team has attended to this for Room ${matchingTask.room || staffRoom || ''}. Please let us know if you need anything else.`,
+                at: timeStr,
+                confidence: 0.98,
+              },
+            }).catch(() => {});
+          }
+        }
+      }
+
+      // Log Activity Item
+      await prisma.activityItem.create({
+        data: {
+          id: `act-${Date.now()}`,
+          hotelId,
+          at: timeStr,
+          kind: staffDept === 'Housekeeping' ? 'room' : 'task',
+          text: `WhatsApp operational update from ${staffContact} (${staffDept}): "${msgText.slice(0, 60)}"`,
+          meta: staffRoom ? `Room ${staffRoom}` : 'WhatsApp Ops',
+        },
+      }).catch(() => {});
+
+      // Outbound acknowledgment to staff
+      sendMetaWhatsAppMessage(cleanPhone, `Acknowledged, ${staffContact.split(' ')[0]}. Update recorded in system.`, [], hotelId).catch(() => {});
+
+      if (isMetaWebhook) return res.sendStatus(200);
+      return successResponse(res, { success: true, staff: true, contact: staffContact, department: staffDept }, 'Department staff update processed');
+    }
 
     // 1. Dynamic Room Detection
     const detectedRoom = body.room || extractRoomNumber(msgText);
@@ -558,8 +733,19 @@ export const handleWebhook = async (req, res) => {
       });
     }
 
-    // 5. Append message to conversation
-    const msgId = `m-wa-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    // 5. Append message to conversation (Idempotent: deduplicate by Meta message id)
+    const rawMsgId = isMetaWebhook && body.entry?.[0]?.changes?.[0]?.value?.messages?.[0]?.id;
+    const msgId = rawMsgId ? `m-wa-${rawMsgId}` : `m-wa-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+    const existingMessage = await prisma.message.findUnique({
+      where: { id: msgId },
+    }).catch(() => null);
+
+    if (existingMessage) {
+      console.log(`[WhatsApp Webhook] Duplicate message ${msgId} skipped`);
+      return res.sendStatus(200);
+    }
+
     const messageRecord = await prisma.message.create({
       data: {
         id: msgId,
@@ -595,15 +781,22 @@ export const handleWebhook = async (req, res) => {
       currentTaskIds.push(aiResult.task.id);
     }
 
+    const isEscalated = Boolean(aiResult?.escalation || aiResult?.aiStatus === 'escalated');
+    const requiresApproval = Boolean(aiResult?.requiresApproval);
+    const convAiStatus = isEscalated ? 'escalated' : (requiresApproval ? 'human-takeover' : 'ai-handling');
+    const upsellIdeas = aiResult?.upsellIdeas || [];
+
     // Update conversation with dynamic AI reply and metadata
     await prisma.conversation.update({
       where: { id: conversation.id },
       data: {
         suggestedReply: aiSuggestedReply,
-        aiStatus: 'ai-handling',
+        aiStatus: convAiStatus,
+        upsellIdeas: JSON.stringify(upsellIdeas),
         knowledgeUsed: JSON.stringify(knowledgeUsed),
         taskIds: JSON.stringify(currentTaskIds),
         lastAt: timeStr,
+        ...(aiResult?.escalation ? { escalation: JSON.stringify(aiResult.escalation) } : {}),
       },
     });
 
@@ -621,8 +814,8 @@ export const handleWebhook = async (req, res) => {
       },
     }).catch(() => {});
 
-    // 8. Outbound Dispatch to Guest (uses hotelId's specific WhatsApp credentials)
-    if (aiResult?.replyText && cleanPhone) {
+    // 8. Outbound Dispatch to Guest (uses hotelId's specific WhatsApp credentials, only if autonomous)
+    if (!requiresApproval && aiResult?.replyText && cleanPhone) {
       sendMetaWhatsAppMessage(cleanPhone, aiResult.replyText, [], hotelId).catch(() => {});
     }
 
@@ -632,17 +825,18 @@ export const handleWebhook = async (req, res) => {
       stage: convStage === 'In House' ? 'in-house' : 'pre-arrival',
       channels: ['whatsapp'],
       primaryChannel: 'whatsapp',
-      aiStatus: 'ai-handling',
-      sentiment: 'neutral',
+      aiStatus: convAiStatus,
+      sentiment: isEscalated ? 'frustrated' : 'neutral',
       subject: `WhatsApp Chat with ${guest.name}`,
       summary: `"${msgText.slice(0, 100)}"`,
       suggestedReply: aiSuggestedReply,
       knowledgeUsed,
-      upsellIdeas: [],
+      upsellIdeas,
       taskIds: currentTaskIds,
+      escalation: aiResult?.escalation || undefined,
       unread: conversation.unread || 1,
       lastAt: timeStr,
-      aiHandledCount: 0,
+      aiHandledCount: requiresApproval ? (conversation.aiHandledCount || 0) : ((conversation.aiHandledCount || 0) + 1),
       guest: {
         id: guest.id,
         name: guest.name,
@@ -723,7 +917,10 @@ export const handleWebhook = async (req, res) => {
  */
 export const sendTestMessage = async (req, res, next) => {
   try {
-    const hotelId = req.user?.hotelId || req.body?.hotelId;
+    const hotelId = req.user?.hotelId;
+    if (!hotelId) {
+      return errorResponse(res, 'Authentication required: hotel context missing', 401);
+    }
     const { to, message, buttons } = req.body;
     if (!to || !message) {
       return errorResponse(res, 'Recipient phone (to) and message text are required', 400);
@@ -741,9 +938,9 @@ export const sendTestMessage = async (req, res, next) => {
  */
 export const handleEmbeddedSignupExchange = async (req, res, next) => {
   try {
-    const hotelId = req.user?.hotelId || req.body?.hotelId;
+    const hotelId = req.user?.hotelId;
     if (!hotelId) {
-      return errorResponse(res, 'hotelId is required', 400);
+      return errorResponse(res, 'Authentication required: hotel context missing', 401);
     }
 
     const { code, wabaId, phoneNumberId, displayPhoneNumber, targetType } = req.body;
@@ -793,13 +990,22 @@ export const handleOAuthCallback = async (req, res) => {
 
     let parsedState = {};
     if (state) {
-      try {
-        const decodedStr = Buffer.from(state, 'base64').toString('utf-8');
-        parsedState = JSON.parse(decodedStr);
-      } catch (_) {
+      if (state.includes('.')) {
+        const verified = verifyOAuthState(state);
+        if (verified.valid) {
+          parsedState = verified.data || {};
+        } else {
+          console.warn('[Meta OAuth State Error]:', verified.error);
+        }
+      } else {
         try {
-          parsedState = JSON.parse(state);
-        } catch (__) {}
+          const decodedStr = Buffer.from(state, 'base64').toString('utf-8');
+          parsedState = JSON.parse(decodedStr);
+        } catch (_) {
+          try {
+            parsedState = JSON.parse(state);
+          } catch (__) {}
+        }
       }
     }
 

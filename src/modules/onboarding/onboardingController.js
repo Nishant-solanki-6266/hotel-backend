@@ -69,16 +69,59 @@ export const getOnboardingStatus = async (req, res, next) => {
       }
     }
 
+    const targetHotelId = hotel?.id || hotelId;
+
+    // Check real active integrations from database
+    const [pmsInteg, emailInteg, waIntegs] = await Promise.all([
+      prisma.pmsIntegration.findUnique({ where: { hotelId: targetHotelId } }).catch(() => null),
+      prisma.emailIntegration.findUnique({ where: { hotelId: targetHotelId } }).catch(() => null),
+      prisma.whatsAppIntegration.findMany({ where: { hotelId: targetHotelId, status: 'connected' } }).catch(() => []),
+    ]);
+
+    const isPmsConnected = pmsInteg?.status === 'connected';
+    const isEmailConnected = emailInteg?.status === 'connected';
+    const hasWaGuest = waIntegs.some((w) => w.targetType === 'guest' || w.targetType === 'both');
+    const hasWaInternal = waIntegs.some((w) => w.targetType === 'internal' || w.targetType === 'both');
+
+    if (isPmsConnected && !stepsDone.includes('pms')) stepsDone.push('pms');
+    if (isEmailConnected && !stepsDone.includes('email')) stepsDone.push('email');
+    if (hasWaGuest && !stepsDone.includes('wa-guest')) stepsDone.push('wa-guest');
+    if (hasWaInternal && !stepsDone.includes('wa-internal')) stepsDone.push('wa-internal');
+
     const doneMap = {
       profile: stepsDone.includes('profile'),
-      pms: stepsDone.includes('pms'),
-      email: stepsDone.includes('email'),
-      'wa-guest': stepsDone.includes('wa-guest'),
-      'wa-internal': stepsDone.includes('wa-internal'),
+      pms: isPmsConnected || stepsDone.includes('pms'),
+      email: isEmailConnected || stepsDone.includes('email'),
+      'wa-guest': hasWaGuest || stepsDone.includes('wa-guest'),
+      'wa-internal': hasWaInternal || stepsDone.includes('wa-internal'),
       knowledge: stepsDone.includes('knowledge'),
       users: stepsDone.includes('users'),
       ai: stepsDone.includes('ai'),
     };
+
+    // Synchronize OnboardingState table
+    prisma.onboardingState.upsert({
+      where: { hotelId: targetHotelId },
+      update: {
+        pmsDone: doneMap.pms,
+        emailDone: doneMap.email,
+        guestWaDone: doneMap['wa-guest'],
+        internalWaDone: doneMap['wa-internal'],
+        kbDone: doneMap.knowledge,
+        usersDone: doneMap.users,
+        aiDone: doneMap.ai,
+      },
+      create: {
+        hotelId: targetHotelId,
+        pmsDone: doneMap.pms,
+        emailDone: doneMap.email,
+        guestWaDone: doneMap['wa-guest'],
+        internalWaDone: doneMap['wa-internal'],
+        kbDone: doneMap.knowledge,
+        usersDone: doneMap.users,
+        aiDone: doneMap.ai,
+      },
+    }).catch(() => {});
 
     const profile = {
       name: hotel?.name || 'My Hotel',
@@ -282,6 +325,25 @@ export const saveOnboardingStep = async (req, res, next) => {
       stepsDone.push(stepKey);
     }
 
+    // Keep OnboardingState table in sync with step progression
+    const stepFieldMap = {
+      pms: 'pmsDone',
+      email: 'emailDone',
+      'wa-guest': 'guestWaDone',
+      'wa-internal': 'internalWaDone',
+      knowledge: 'kbDone',
+      users: 'usersDone',
+      ai: 'aiDone',
+    };
+    const stateField = stepFieldMap[stepKey];
+    if (stateField) {
+      prisma.onboardingState.upsert({
+        where: { hotelId: hotel?.id || hotelId },
+        update: { [stateField]: true },
+        create: { hotelId: hotel?.id || hotelId, [stateField]: true },
+      }).catch(() => {});
+    }
+
     const updateData = {
       onboardingSteps: JSON.stringify(stepsDone),
     };
@@ -395,6 +457,7 @@ export const saveOnboardingStep = async (req, res, next) => {
     }
 
     // Handle Step 7: Invite Users (User Upsert + Brevo Transactional Email Dispatch)
+    // Handle Step 7: Invite Users (User Upsert + Brevo Transactional Email Dispatch)
     if (stepKey === 'users') {
       try {
         const inviteEmail = data?.email || data?.address;
@@ -414,7 +477,18 @@ export const saveOnboardingStep = async (req, res, next) => {
 
           const userTitle = roleTitleMap[inviteRole] || 'Staff Member';
           const isWhatsappRole = inviteRole === 'housekeeping' || inviteRole === 'maintenance';
-          const defaultHash = bcrypt.hashSync('demo-access', 10);
+
+          // Multi-tenant isolation check: do not overwrite user belonging to another hotel
+          const existingUser = await prisma.user.findUnique({
+            where: { email: inviteEmail.toLowerCase() },
+          });
+          if (existingUser && existingUser.hotelId !== hotelId) {
+            return errorResponse(res, `User with email ${inviteEmail} is already registered with another property`, 409);
+          }
+
+          // Generate a unique temporary password instead of a shared static string
+          const tempPassword = `Hx-${Math.random().toString(36).slice(2, 8).toUpperCase()}!${Math.floor(100 + Math.random() * 900)}`;
+          const defaultHash = bcrypt.hashSync(tempPassword, 10);
 
           // 1. Physically Upsert User Record into MySQL Database scoped to hotelId
           await prisma.user.upsert({
@@ -438,7 +512,7 @@ export const saveOnboardingStep = async (req, res, next) => {
             },
           });
 
-          // 2. Dispatch Invitation Email
+          // 2. Dispatch Invitation Email with generated temporary password
           await sendBrevoInvitationEmail({
             toEmail: inviteEmail.toLowerCase(),
             toName: formattedName,
@@ -446,7 +520,7 @@ export const saveOnboardingStep = async (req, res, next) => {
             title: userTitle,
             hotelName: hotel?.name || 'Hotelogx Connect',
             loginUrl: 'http://localhost:5173/login',
-            temporaryPassword: 'demo-access',
+            temporaryPassword: tempPassword,
           });
 
           // 3. Log Activity Feed Entry in MySQL
@@ -463,6 +537,43 @@ export const saveOnboardingStep = async (req, res, next) => {
         }
       } catch (userErr) {
         console.warn('[Onboarding Users Warning]', userErr.message);
+      }
+    }
+
+    // Handle Step 8: AI Rules & Mode Persistence
+    if (stepKey === 'ai' && data) {
+      try {
+        if (data.aiMode) {
+          await prisma.hotel.update({
+            where: { id: hotel?.id || hotelId },
+            data: { aiMode: data.aiMode },
+          }).catch(() => {});
+        }
+        if (Array.isArray(data.rules)) {
+          for (const r of data.rules) {
+            if (!r.topic || !r.mode) continue;
+            await prisma.aiRule.upsert({
+              where: {
+                hotelId_topic: {
+                  hotelId: hotel?.id || hotelId,
+                  topic: r.topic,
+                },
+              },
+              update: {
+                mode: r.mode,
+                note: r.note || '',
+              },
+              create: {
+                hotelId: hotel?.id || hotelId,
+                topic: r.topic,
+                mode: r.mode,
+                note: r.note || '',
+              },
+            }).catch(() => {});
+          }
+        }
+      } catch (aiErr) {
+        console.warn('[Onboarding AI Step Warning]:', aiErr.message);
       }
     }
 
@@ -493,6 +604,31 @@ export const completeOnboarding = async (req, res, next) => {
         where: { id: hotel.id },
         data: { onboardingDone: true },
       });
+
+      await prisma.onboardingState.upsert({
+        where: { hotelId: hotel.id },
+        update: {
+          pmsDone: true,
+          emailDone: true,
+          guestWaDone: true,
+          internalWaDone: true,
+          kbDone: true,
+          usersDone: true,
+          aiDone: true,
+          currentStep: 8,
+        },
+        create: {
+          hotelId: hotel.id,
+          pmsDone: true,
+          emailDone: true,
+          guestWaDone: true,
+          internalWaDone: true,
+          kbDone: true,
+          usersDone: true,
+          aiDone: true,
+          currentStep: 8,
+        },
+      }).catch(() => {});
     }
 
     try {

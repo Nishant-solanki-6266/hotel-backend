@@ -1,4 +1,5 @@
 import { prisma } from '../../config/database.js';
+import { encryptToken } from '../../utils/tokenCrypto.js';
 
 /**
  * Exchange temporary Meta OAuth Code from Embedded Signup for Permanent Access Token
@@ -44,8 +45,8 @@ export async function exchangeMetaCodeForToken({
     }
   }
 
-  // Fallback to configured system token if token exchange is bypassed or in development
-  if (!accessToken) {
+  // Fallback to configured system token only in non-production environments
+  if (!accessToken && process.env.NODE_ENV !== 'production') {
     accessToken = process.env.META_ACCESS_TOKEN || process.env.WHATSAPP_TOKEN || null;
   }
 
@@ -81,7 +82,7 @@ export async function exchangeMetaCodeForToken({
         displayPhoneNumber: displayPhoneNumber || existing.displayPhoneNumber || cleanPhone,
         phoneNumberId: phoneNumberId || existing.phoneNumberId,
         wabaId: wabaId || existing.wabaId,
-        accessToken: accessToken || existing.accessToken,
+        accessToken: accessToken ? encryptToken(accessToken) : existing.accessToken,
         status: 'connected',
       },
     });
@@ -94,7 +95,7 @@ export async function exchangeMetaCodeForToken({
         displayPhoneNumber: displayPhoneNumber || cleanPhone,
         phoneNumberId: phoneNumberId || null,
         wabaId: wabaId || null,
-        accessToken: accessToken || null,
+        accessToken: accessToken ? encryptToken(accessToken) : null,
         status: 'connected',
       },
     });

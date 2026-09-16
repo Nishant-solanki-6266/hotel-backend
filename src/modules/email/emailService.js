@@ -309,15 +309,22 @@ export const emailService = {
       currentTaskIds.push(aiResult.task.id);
     }
 
+    const isEscalated = Boolean(aiResult?.escalation || aiResult?.aiStatus === 'escalated');
+    const requiresApproval = Boolean(aiResult?.requiresApproval);
+    const convAiStatus = isEscalated ? 'escalated' : (requiresApproval ? 'human-takeover' : 'ai-handling');
+    const upsellIdeas = aiResult?.upsellIdeas || [];
+
     // Update conversation with dynamic AI reply and metadata
     await prisma.conversation.update({
       where: { id: conversation.id },
       data: {
         suggestedReply: aiSuggestedReply,
-        aiStatus: 'ai-handling',
+        aiStatus: convAiStatus,
+        upsellIdeas: JSON.stringify(upsellIdeas),
         knowledgeUsed: JSON.stringify(knowledgeUsed),
         taskIds: JSON.stringify(currentTaskIds),
         lastAt: timeStr,
+        ...(aiResult?.escalation ? { escalation: JSON.stringify(aiResult.escalation) } : {}),
       },
     });
 
@@ -341,17 +348,18 @@ export const emailService = {
       stage: convStage === 'In House' ? 'in-house' : 'pre-arrival',
       channels: ['email'],
       primaryChannel: 'email',
-      aiStatus: 'ai-handling',
-      sentiment: 'neutral',
+      aiStatus: convAiStatus,
+      sentiment: isEscalated ? 'frustrated' : 'neutral',
       subject,
       summary: `"${textBody.slice(0, 100)}"`,
       suggestedReply: aiSuggestedReply,
       knowledgeUsed,
-      upsellIdeas: [],
+      upsellIdeas,
       taskIds: currentTaskIds,
+      escalation: aiResult?.escalation || undefined,
       unread: conversation.unread || 1,
       lastAt: timeStr,
-      aiHandledCount: 0,
+      aiHandledCount: requiresApproval ? (conversation.aiHandledCount || 0) : ((conversation.aiHandledCount || 0) + 1),
       guest: {
         id: guest.id,
         name: guest.name,

@@ -144,7 +144,7 @@ export const pmsService = {
       },
     });
 
-    // Mark PMS step done in Hotel table
+    // Mark PMS step done in Hotel table and OnboardingState table
     try {
       const currentHotel = await prisma.hotel.findUnique({ where: { id: targetHotelId } });
       let steps = [];
@@ -158,6 +158,13 @@ export const pmsService = {
         where: { id: targetHotelId },
         data: { onboardingSteps: JSON.stringify(steps) },
       });
+
+      // Keep OnboardingState table in sync
+      await prisma.onboardingState.upsert({
+        where: { hotelId: targetHotelId },
+        update: { pmsDone: true },
+        create: { hotelId: targetHotelId, pmsDone: true },
+      }).catch(() => {});
     } catch { }
 
     return {
@@ -209,6 +216,12 @@ export const pmsService = {
         where: { id: targetHotelId },
         data: { onboardingSteps: JSON.stringify(steps) },
       });
+
+      // Keep OnboardingState table in sync
+      await prisma.onboardingState.update({
+        where: { hotelId: targetHotelId },
+        data: { pmsDone: false },
+      }).catch(() => {});
     } catch { }
 
     return { success: true, message: 'PMS disconnected successfully' };
@@ -295,13 +308,27 @@ export const pmsService = {
 
     try {
       // 1. Resilient Staggered Ingestion from Mews Connector API
-      const mewsResources = await mewsClient.getResources(token, { limit: 100 }).catch(() => []);
+      const syncErrors = [];
+      const mewsResources = await mewsClient.getResources(token, { limit: 100 }).catch((err) => {
+        syncErrors.push(`Resources: ${err.message}`);
+        return [];
+      });
       await new Promise((r) => setTimeout(r, 200));
-      const mewsCustomers = await mewsClient.getCustomers(token, { limit: 50 }).catch(() => []);
+      const mewsCustomers = await mewsClient.getCustomers(token, { limit: 100 }).catch((err) => {
+        syncErrors.push(`Customers: ${err.message}`);
+        return [];
+      });
       await new Promise((r) => setTimeout(r, 200));
-      const mewsReservations = await mewsClient.getReservations(token, { limit: 50 }).catch(() => []);
+      const mewsReservations = await mewsClient.getReservations(token, { limit: 100 }).catch((err) => {
+        syncErrors.push(`Reservations: ${err.message}`);
+        return [];
+      });
       await new Promise((r) => setTimeout(r, 200));
       const mewsServices = await mewsClient.getServices(token).catch(() => []);
+
+      if (syncErrors.length >= 3) {
+        throw new Error(`Mews PMS API failed: ${syncErrors.join('; ')}`);
+      }
 
       let guestsSynced = 0;
       let reservationsSynced = 0;
@@ -396,8 +423,8 @@ export const pmsService = {
           const customerId = res.CustomerId || `cust-${res.Id}`;
           const resNumber = String(res.Number || res.Id);
           const nights = calculateNights(res.StartUtc, res.EndUtc);
-          const arrival = res.StartUtc ? new Date(res.StartUtc).toISOString().slice(11, 16) : '15:00';
-          const departure = res.EndUtc ? new Date(res.EndUtc).toISOString().slice(11, 16) : '11:00';
+          const arrival = res.StartUtc ? new Date(res.StartUtc).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10);
+          const departure = res.EndUtc ? new Date(res.EndUtc).toISOString().slice(0, 10) : new Date(Date.now() + 86400000).toISOString().slice(0, 10);
           const adults = res.AdultCount || 1;
           const children = res.ChildCount || 0;
           const roomType = res.ResourceCategoryId || 'Deluxe Room';
@@ -434,7 +461,17 @@ export const pmsService = {
         }
       }
 
-      const assignedCleaners = ['Rosa Ferreira', 'Elena Popov', 'Fatima Zahra', 'Marc Peeters'];
+      // Query active housekeeping team members specifically for this hotel (Multi-Tenant)
+      const hotelHousekeepers = await prisma.user.findMany({
+        where: {
+          hotelId: targetHotelId,
+          role: 'housekeeping',
+        },
+        select: { id: true, name: true, phone: true, whatsapp: true },
+        orderBy: { createdAt: 'asc' },
+      });
+
+      const assignedCleaners = hotelHousekeepers.map((u) => u.name).filter(Boolean);
       const roomList = Array.from(uniqueRoomMap.entries());
       const dirtyTasks = [];
       const syncDate = new Date();
@@ -447,7 +484,7 @@ export const pmsService = {
           const assignedCust = assignedRes?.CustomerId ? masterGuestMap.get(assignedRes.CustomerId) : null;
 
           let arrivalTime = null;
-          let guestStatus = room.IsOccupied ? 'In-House' : 'Vacant';
+          let guestStatus = room.IsOccupied ? 'Occupied' : 'Vacant';
           const vip = Boolean(assignedCust?.vip);
           const priority = vip ? 'High' : 'Normal';
           const note = null;
@@ -469,16 +506,18 @@ export const pmsService = {
                 arrivalTime = new Date(startIso).toISOString().slice(11, 16);
               }
               if (resState === 'Started' || resState === 'In House') {
-                guestStatus = 'In-House';
+                guestStatus = 'Occupied';
               }
             } else if (resState === 'Started' || resState === 'In House') {
-              guestStatus = 'In-House';
+              guestStatus = 'Occupied';
             }
           }
 
           const roomState = mapMewsRoomState(room.State);
           const cleaningType = (guestStatus === 'Departed' || guestStatus === 'Departing') ? 'Departure' : 'Stayover';
-          const assignedCleaner = assignedCleaners[(idx + roomNumber.length) % assignedCleaners.length];
+          const assignedCleaner = assignedCleaners.length > 0
+            ? assignedCleaners[(idx + roomNumber.length) % assignedCleaners.length]
+            : null;
           const timeStr = syncDate.toISOString().slice(11, 16);
 
           if (roomState === 'Dirty') {
@@ -489,9 +528,9 @@ export const pmsService = {
               room: roomNumber,
               priority: vip ? 'High' : 'Normal',
               createdAt: timeStr,
-              status: 'Open',
+              status: assignedCleaner ? 'Assigned' : 'Open',
               source: 'PMS event',
-              assignee: assignedCleaner,
+              assignee: assignedCleaner || null,
             });
           }
 
@@ -542,59 +581,9 @@ export const pmsService = {
         }).catch(() => { });
       }
 
-      // STAGE 5: Bulk Multi-Row SQL Query 5 -> MEWS SERVICES & UPSELL CATALOGUE
+      // STAGE 5: MEWS SERVICES PROCESSED (Preserve real guest upsells; no synthetic records)
       if (mewsServices.length > 0) {
-        const validServices = mewsServices.filter((s) => s?.Id && s?.Name);
-        if (validServices.length > 0) {
-          const guestArray = guestList.length > 0 ? guestList : [{ name: 'Hotel Guest', room: '101' }];
-          const roomNumbers = roomList.map(([num]) => num);
-
-          const upsellTuples = validServices.map((srv, idx) => {
-            const upsellId = `upsell-${targetHotelId}-${srv.Id.slice(0, 8)}-${idx}`;
-            const numVal = Number(srv.PromotionalAmount?.Amount || srv.Amount?.Amount || 25.0);
-            const val = isNaN(numVal) ? 25.0 : numVal;
-            const assignedGuest = guestArray[idx % guestArray.length];
-            const guestName = assignedGuest?.name || 'Hotel Guest';
-            const assignedRoom = assignedGuest?.room || roomNumbers[idx % Math.max(roomNumbers.length, 1)] || '101';
-            const channel = idx % 3 === 0 ? 'email' : 'whatsapp';
-
-            // Realistic operational distribution matching UI contract:
-            let status = 'Accepted';
-            if (idx % 6 === 0) {
-              status = 'Declined';
-            } else if (idx % 8 === 0) {
-              status = 'Expired';
-            } else if (idx % 2 === 1) {
-              status = 'Sent';
-            } else {
-              status = 'Accepted';
-            }
-
-            const hour = String(7 + (idx % 6)).padStart(2, '0');
-            const minute = String((idx * 7) % 60).padStart(2, '0');
-            const dateStr = `Today ${hour}:${minute}`;
-
-            return `(${sqlStr(upsellId)}, ${sqlStr(targetHotelId)}, ${sqlStr(guestName)}, ${sqlStr(assignedRoom)}, ${sqlStr(srv.Name)}, ${val}, ${sqlStr(channel)}, ${sqlStr(status)}, ${sqlStr(dateStr)})`;
-          }).join(',\n');
-
-          const upsellSql = `
-            INSERT INTO Upsell (id, hotelId, guest, room, offer, value, channel, status, date)
-            VALUES ${upsellTuples}
-            ON DUPLICATE KEY UPDATE
-              hotelId = VALUES(hotelId),
-              guest = VALUES(guest),
-              room = VALUES(room),
-              offer = VALUES(offer),
-              value = VALUES(value),
-              channel = VALUES(channel),
-              status = VALUES(status),
-              date = VALUES(date)
-          `;
-          await prisma.$executeRawUnsafe(upsellSql).catch((e) => {
-            console.warn('[PmsService] Upsell bulk SQL error:', e.message);
-          });
-          upsellsSynced = validServices.length;
-        }
+        console.log(`[PmsService] Synced ${mewsServices.length} Mews service offerings for hotel ${targetHotelId}`);
       }
 
       // STAGE 6: Update Integration Status & Emit Real-Time SSE
@@ -663,6 +652,7 @@ export const pmsService = {
       await prisma.pmsIntegration.update({
         where: { hotelId: targetHotelId },
         data: {
+          status: 'error',
           lastError: err.message,
         },
       }).catch(() => { });
@@ -723,7 +713,12 @@ export const pmsService = {
 
     // Query database rooms inventory for accurate local capacity
     const totalRooms = await prisma.room.count({ where: { hotelId: targetHotelId } }).catch(() => 48);
-    const occupiedRooms = await prisma.room.count({ where: { hotelId: targetHotelId, guestStatus: 'Occupied' } }).catch(() => 12);
+    const occupiedRooms = await prisma.room.count({
+      where: {
+        hotelId: targetHotelId,
+        guestStatus: { in: ['Occupied', 'In-House', 'In House'] },
+      },
+    }).catch(() => 12);
     const availableCount = Math.max(0, totalRooms - occupiedRooms);
 
     return {
@@ -731,10 +726,18 @@ export const pmsService = {
       availableCount,
       hotelName: hotelExists?.name || 'Hotel Mercier',
       bookingEngine: hotelExists?.bookingEngine || 'https://booking.hotelmercier.be',
-      categories: [
-        { name: 'Deluxe Courtyard', available: true, rate: '€160 / night' },
-        { name: 'Superior King', available: availableCount > 2, rate: '€185 / night' },
-        { name: 'Townhouse Suite', available: availableCount > 5, rate: '€240 / night' },
+      categories: (liveRates && liveRates.length > 0) ? liveRates.slice(0, 4).map((r) => {
+        const rateVal = r.Rate?.GrossValue || r.Amount || r.BaseRate || (r.Price?.GrossValue);
+        const cur = hotelExists?.currency || '€';
+        return {
+          name: r.Name || r.RateName || 'Standard Room',
+          available: availableCount > 0,
+          rate: rateVal ? `${cur}${rateVal} / night` : `${cur}160 / night`,
+        };
+      }) : [
+        { name: 'Deluxe Courtyard', available: availableCount > 0, rate: `${hotelExists?.currency || '€'}160 / night` },
+        { name: 'Superior King', available: availableCount > 2, rate: `${hotelExists?.currency || '€'}185 / night` },
+        { name: 'Townhouse Suite', available: availableCount > 5, rate: `${hotelExists?.currency || '€'}240 / night` },
       ],
       mewsLiveData: {
         availabilitiesCount: liveAvailability.length,
@@ -747,12 +750,27 @@ export const pmsService = {
    * Process incoming Mews Webhook event, update DB, and broadcast live via SSE
    */
   async handleMewsWebhook(hotelId, payload) {
-    let hotelExists = await prisma.hotel.findUnique({ where: { id: hotelId || 'hotel-mercier' } });
-    if (!hotelExists && (hotelId === 'hotel-mercier' || !hotelId)) {
-      hotelExists = await prisma.hotel.findFirst();
+    let hotelExists = null;
+    if (hotelId) {
+      hotelExists = await prisma.hotel.findUnique({ where: { id: hotelId } });
     }
-    const targetHotelId = hotelExists?.id || 'hotel-mercier';
-    const hotelName = hotelExists?.name || 'Hotel Mercier';
+    const enterpriseId = payload?.EnterpriseId || payload?.Enterprise?.Id;
+    if (!hotelExists && enterpriseId) {
+      const mewsInteg = await prisma.pmsIntegration.findFirst({
+        where: { OR: [{ propertyId: enterpriseId }, { accessTokenEncrypted: enterpriseId }] },
+      });
+      if (mewsInteg?.hotelId) {
+        hotelExists = await prisma.hotel.findUnique({ where: { id: mewsInteg.hotelId } });
+      }
+    }
+    if (!hotelExists) {
+      hotelExists = await prisma.hotel.findUnique({ where: { id: 'hotel-mercier' } });
+    }
+    if (!hotelExists) {
+      return { processed: 0, warning: 'Target hotel not identified for Mews webhook' };
+    }
+    const targetHotelId = hotelExists.id;
+    const hotelName = hotelExists.name;
 
     const eventsToProcess = [];
 
@@ -792,7 +810,7 @@ export const pmsService = {
 
         if (roomNum) {
           await prisma.room.updateMany({
-            where: { number: roomNum },
+            where: { hotelId: targetHotelId, number: roomNum },
             data: { status: mappedRoomStatus, updatedAt: timeStr },
           }).catch(() => { });
 
@@ -861,7 +879,7 @@ export const pmsService = {
         const departureDate = data.departure || data.endUtc ? new Date(data.departure || data.endUtc).toISOString().split('T')[0] : new Date(Date.now() + 86400000).toISOString().split('T')[0];
 
         await prisma.reservation.upsert({
-          where: { number: resNumber },
+          where: { hotelId_number: { hotelId: targetHotelId, number: resNumber } },
           update: {
             hotelId: targetHotelId,
             guestId,
@@ -897,7 +915,7 @@ export const pmsService = {
 
           if (Object.keys(roomUpdate).length > 0) {
             await prisma.room.updateMany({
-              where: { number: roomNum },
+              where: { hotelId: targetHotelId, number: roomNum },
               data: roomUpdate,
             }).catch(() => { });
           }
