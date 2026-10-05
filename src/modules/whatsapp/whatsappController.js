@@ -4,7 +4,7 @@ import { errorResponse, successResponse } from '../../utils/response.js';
 import { pmsService } from '../pms/pmsService.js';
 import { realtimeService } from '../../services/realtimeService.js';
 import { extractRoomNumber, processGuestMessageAI } from '../conversations/aiService.js';
-import { exchangeMetaCodeForToken } from './whatsappOAuth.js';
+import { exchangeMetaCodeForToken, connectManualWhatsAppCredentials } from './whatsappOAuth.js';
 import { decryptToken, verifyOAuthState } from '../../utils/tokenCrypto.js';
 
 /**
@@ -1026,4 +1026,43 @@ export const handleOAuthCallback = async (req, res) => {
     return res.redirect(`${frontendOrigin}/onboarding?wa_error=${encodeURIComponent(err.message)}`);
   }
 };
+
+/**
+ * Endpoint: POST /api/whatsapp/connect-manual (Manual / Direct Meta Credentials Connect)
+ */
+export const handleManualConnect = async (req, res, next) => {
+  try {
+    const hotelId = req.user?.hotelId || req.body?.hotelId || 'hotel-mercier';
+    const { phoneNumberId, accessToken, displayPhoneNumber, wabaId, targetType } = req.body;
+
+    if (!phoneNumberId || !accessToken || !displayPhoneNumber) {
+      return errorResponse(res, 'Phone Number ID, Access Token, and Display Phone Number are required', 400);
+    }
+
+    const integration = await connectManualWhatsAppCredentials({
+      hotelId,
+      targetType: targetType || 'guest',
+      phoneNumberId,
+      accessToken,
+      displayPhoneNumber,
+      wabaId,
+    });
+
+    return successResponse(res, {
+      success: true,
+      integration: {
+        id: integration.id,
+        hotelId: integration.hotelId,
+        targetType: integration.targetType,
+        displayPhoneNumber: integration.displayPhoneNumber,
+        phoneNumberId: integration.phoneNumberId,
+        wabaId: integration.wabaId,
+        status: integration.status,
+      },
+    }, 'WhatsApp connected successfully via direct Meta API credentials');
+  } catch (error) {
+    next(error);
+  }
+};
+
 

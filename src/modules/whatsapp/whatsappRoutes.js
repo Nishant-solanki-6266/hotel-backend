@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { authenticate } from '../../middlewares/auth.js';
+import { authenticate, optionalAuth } from '../../middlewares/auth.js';
 import {
   getThreads,
   handleAction,
@@ -8,6 +8,7 @@ import {
   sendTestMessage,
   handleEmbeddedSignupExchange,
   handleOAuthCallback,
+  handleManualConnect,
 } from './whatsappController.js';
 
 const router = Router();
@@ -18,6 +19,7 @@ router.get('/webhook', verifyWebhook);
 router.post('/webhook', handleWebhook);
 router.post('/send', authenticate, sendTestMessage);
 router.post('/embedded-signup', authenticate, handleEmbeddedSignupExchange);
+router.post('/connect-manual', optionalAuth, handleManualConnect);
 router.get('/oauth/callback', handleOAuthCallback);
 
 export default router;

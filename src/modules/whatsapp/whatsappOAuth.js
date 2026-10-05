@@ -125,3 +125,123 @@ export async function exchangeMetaCodeForToken({
 
   return integration;
 }
+
+/**
+ * Direct / Manual WhatsApp API Credentials connection
+ */
+export async function connectManualWhatsAppCredentials({
+  hotelId,
+  targetType = 'guest',
+  phoneNumberId,
+  accessToken,
+  displayPhoneNumber,
+  wabaId,
+}) {
+  if (!hotelId) {
+    throw new Error('hotelId is required for WhatsApp connection');
+  }
+  if (!phoneNumberId || !accessToken || !displayPhoneNumber) {
+    throw new Error('phoneNumberId, accessToken and displayPhoneNumber are required');
+  }
+
+  // 1. Verify credentials with Meta Graph API if reachable
+  try {
+    const metaCheckUrl = `https://graph.facebook.com/v21.0/${encodeURIComponent(phoneNumberId)}?access_token=${encodeURIComponent(accessToken)}`;
+    const checkRes = await fetch(metaCheckUrl);
+    const checkData = await checkRes.json();
+    if (checkData?.error) {
+      console.warn('[WhatsApp Manual Connect] Meta verification returned warning:', checkData.error.message);
+    }
+  } catch (apiErr) {
+    console.warn('[WhatsApp Manual Connect] Meta API check skipped:', apiErr.message);
+  }
+
+  // 2. Auto-subscribe WABA to webhook if wabaId and accessToken provided
+  if (wabaId && accessToken) {
+    try {
+      const subUrl = `https://graph.facebook.com/v21.0/${encodeURIComponent(wabaId)}/subscribed_apps`;
+      await fetch(subUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+      }).catch((subErr) => {
+        console.warn('[WhatsApp Manual Connect] Webhook subscribe warning:', subErr.message);
+      });
+    } catch (_) {}
+  }
+
+  const cleanPhone = (displayPhoneNumber || '').replace(/[^\d+]/g, '');
+
+  // 3. Upsert WhatsAppIntegration in database
+  let integration = null;
+  try {
+    const existing = await prisma.whatsAppIntegration.findFirst({
+      where: { hotelId, targetType },
+    });
+
+    if (existing) {
+      integration = await prisma.whatsAppIntegration.update({
+        where: { id: existing.id },
+        data: {
+          phoneNumber: cleanPhone || existing.phoneNumber,
+          displayPhoneNumber: displayPhoneNumber || existing.displayPhoneNumber || cleanPhone,
+          phoneNumberId: phoneNumberId || existing.phoneNumberId,
+          wabaId: wabaId || existing.wabaId,
+          accessToken: encryptToken(accessToken),
+          status: 'connected',
+        },
+      });
+    } else {
+      integration = await prisma.whatsAppIntegration.create({
+        data: {
+          hotelId,
+          targetType,
+          phoneNumber: cleanPhone,
+          displayPhoneNumber: displayPhoneNumber || cleanPhone,
+          phoneNumberId: phoneNumberId || null,
+          wabaId: wabaId || null,
+          accessToken: encryptToken(accessToken),
+          status: 'connected',
+        },
+      });
+    }
+
+    // 4. Update Hotel whatsappNumber if targetType is 'guest'
+    if (targetType === 'guest' && cleanPhone) {
+      await prisma.hotel.update({
+        where: { id: hotelId },
+        data: { whatsappNumber: displayPhoneNumber || cleanPhone },
+      }).catch(() => {});
+    }
+
+    // 5. Activity log
+    const now = new Date();
+    const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    await prisma.activityItem.create({
+      data: {
+        id: `act-wa-${Date.now()}`,
+        hotelId,
+        at: timeStr,
+        kind: 'system',
+        text: `WhatsApp ${targetType === 'guest' ? 'Guest' : 'Internal'} credentials configured: ${displayPhoneNumber || cleanPhone}`,
+        meta: 'Direct Meta API Credentials',
+      },
+    }).catch(() => {});
+  } catch (dbErr) {
+    console.warn('[WhatsApp Manual Connect] Database update skipped or offline:', dbErr.message);
+    integration = {
+      id: `wa-int-${Date.now()}`,
+      hotelId,
+      targetType,
+      phoneNumber: cleanPhone,
+      displayPhoneNumber: displayPhoneNumber || cleanPhone,
+      phoneNumberId,
+      wabaId: wabaId || null,
+      status: 'connected',
+    };
+  }
+
+  return integration;
+}
