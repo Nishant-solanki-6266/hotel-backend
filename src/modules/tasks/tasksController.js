@@ -67,6 +67,11 @@ export const createTask = async (req, res, next) => {
     const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
     const id = `t-${Date.now()}`;
 
+    const normalizedPriority = priority
+      ? priority.charAt(0).toUpperCase() + priority.slice(1).toLowerCase()
+      : 'Normal';
+    const creatorName = req.user?.name || source || 'Manager';
+
     const task = await prisma.task.create({
       data: {
         id,
@@ -76,7 +81,7 @@ export const createTask = async (req, res, next) => {
         room,
         guest,
         department,
-        priority,
+        priority: normalizedPriority,
         createdAt: timeStr,
         due,
         assignee,
@@ -87,7 +92,7 @@ export const createTask = async (req, res, next) => {
           create: [
             {
               at: timeStr,
-              text: `Task created via ${source}${assignee ? ` and assigned to ${assignee}` : ''}`,
+              text: `Task created by ${creatorName} via ${source}${assignee ? ` and assigned to ${assignee}` : ''}`,
               via: 'dashboard',
             },
           ],

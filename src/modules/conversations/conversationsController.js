@@ -3,6 +3,16 @@ import { errorResponse, successResponse } from '../../utils/response.js';
 import { emailService } from '../email/emailService.js';
 import { sendMetaWhatsAppMessage } from '../whatsapp/whatsappController.js';
 
+const safeJsonParse = (val, fallback = []) => {
+  if (!val) return fallback;
+  if (typeof val !== 'string') return val;
+  try {
+    return JSON.parse(val);
+  } catch {
+    return fallback;
+  }
+};
+
 export const getConversations = async (req, res, next) => {
   try {
     const hotelId = req.user?.hotelId || 'hotel-mercier';
@@ -50,25 +60,18 @@ export const getConversations = async (req, res, next) => {
       return {
         ...c,
         channels: c.primaryChannel ? [c.primaryChannel] : ['whatsapp'],
-        knowledgeUsed: JSON.parse(c.knowledgeUsed || '[]'),
-        upsellIdeas: JSON.parse(c.upsellIdeas || '[]'),
-        escalation: (() => {
-          if (!c.escalation) return undefined;
-          try {
-            return JSON.parse(c.escalation);
-          } catch {
-            return undefined;
-          }
-        })(),
+        knowledgeUsed: safeJsonParse(c.knowledgeUsed, []),
+        upsellIdeas: safeJsonParse(c.upsellIdeas, []),
+        escalation: safeJsonParse(c.escalation, undefined),
         guest: {
           ...c.guest,
-          tags: JSON.parse(c.guest?.tags || '[]'),
+          tags: safeJsonParse(c.guest?.tags, []),
           reservation: resObj,
         },
         messages: (c.messages || []).map((m) => ({
           ...m,
-          knowledge: JSON.parse(m.knowledge || '[]'),
-          buttons: JSON.parse(m.buttons || '[]'),
+          knowledge: safeJsonParse(m.knowledge, []),
+          buttons: safeJsonParse(m.buttons, []),
         })),
       };
     });
@@ -122,26 +125,19 @@ export const getConversationById = async (req, res, next) => {
     const parsed = {
       ...conversation,
       channels: conversation.primaryChannel ? [conversation.primaryChannel] : ['whatsapp'],
-      knowledgeUsed: JSON.parse(conversation.knowledgeUsed || '[]'),
-      upsellIdeas: JSON.parse(conversation.upsellIdeas || '[]'),
-      taskIds: JSON.parse(conversation.taskIds || '[]'),
-      escalation: (() => {
-        if (!conversation.escalation) return undefined;
-        try {
-          return JSON.parse(conversation.escalation);
-        } catch {
-          return undefined;
-        }
-      })(),
+      knowledgeUsed: safeJsonParse(conversation.knowledgeUsed, []),
+      upsellIdeas: safeJsonParse(conversation.upsellIdeas, []),
+      taskIds: safeJsonParse(conversation.taskIds, []),
+      escalation: safeJsonParse(conversation.escalation, undefined),
       guest: {
         ...conversation.guest,
-        tags: JSON.parse(conversation.guest?.tags || '[]'),
+        tags: safeJsonParse(conversation.guest?.tags, []),
         reservation: resObj,
       },
       messages: (conversation.messages || []).map((m) => ({
         ...m,
-        knowledge: JSON.parse(m.knowledge || '[]'),
-        buttons: JSON.parse(m.buttons || '[]'),
+        knowledge: safeJsonParse(m.knowledge, []),
+        buttons: safeJsonParse(m.buttons, []),
       })),
     };
 

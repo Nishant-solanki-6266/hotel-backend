@@ -7,7 +7,7 @@ import { errorResponse, successResponse } from '../../utils/response.js';
  */
 export const connectPmsController = async (req, res) => {
   try {
-    const { provider, propertyId } = req.body;
+    const { provider, propertyId, clientToken } = req.body;
 
     // Tenant isolation: Resolve hotel ID from authenticated user, never from request body
     const hotelId = req.user?.hotelId || 'hotel-mercier';
@@ -16,7 +16,7 @@ export const connectPmsController = async (req, res) => {
       return errorResponse(res, 'Valid Mews Access Token or Property ID is required', 400);
     }
 
-    const result = await pmsService.connectPms(hotelId, { provider, propertyId });
+    const result = await pmsService.connectPms(hotelId, { provider, propertyId, clientToken });
 
     return successResponse(res, result, 'PMS connected successfully');
   } catch (error) {

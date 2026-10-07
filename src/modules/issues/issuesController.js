@@ -55,7 +55,13 @@ export const getIssues = async (req, res, next) => {
     const hotelId = req.user?.hotelId || 'hotel-mercier';
     const { status, room } = req.query;
     const where = { hotelId };
-    if (status) where.status = status;
+    if (status) {
+      if (status.toLowerCase() === 'open' || status.toLowerCase() === 'reported') {
+        where.status = { in: ['Reported', 'Open'] };
+      } else {
+        where.status = status;
+      }
+    }
     if (room) where.room = room;
 
     const issues = await prisma.issue.findMany({

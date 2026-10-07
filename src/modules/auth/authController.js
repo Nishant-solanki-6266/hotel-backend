@@ -113,10 +113,10 @@ export const login = async (req, res, next) => {
         if (!password) {
           return errorResponse(res, 'Password is required', 400);
         }
-        const isDevDemo = process.env.NODE_ENV !== 'production' && password === 'demo-access';
+        const isDevDemo = process.env.NODE_ENV !== 'production' && (password === 'demo-access' || password === 'password123');
         if (user.passwordHash) {
           let match = await bcrypt.compare(password, user.passwordHash);
-          if (!match && password === 'demo-access') {
+          if (!match && isDevDemo) {
             match = await bcrypt.compare('password123', user.passwordHash);
           }
           if (!match && !isDevDemo) {
@@ -128,13 +128,20 @@ export const login = async (req, res, next) => {
       }
     } else if (userId) {
       user = await prisma.user.findUnique({ where: { id: userId } });
-      if (user && user.passwordHash && password) {
-        const isDevDemo = process.env.NODE_ENV !== 'production' && password === 'demo-access';
-        let match = await bcrypt.compare(password, user.passwordHash);
-        if (!match && password === 'demo-access') {
-          match = await bcrypt.compare('password123', user.passwordHash);
+      if (user) {
+        if (!password) {
+          return errorResponse(res, 'Password is required', 400);
         }
-        if (!match && !isDevDemo) {
+        const isDevDemo = process.env.NODE_ENV !== 'production' && (password === 'demo-access' || password === 'password123');
+        if (user.passwordHash) {
+          let match = await bcrypt.compare(password, user.passwordHash);
+          if (!match && isDevDemo) {
+            match = await bcrypt.compare('password123', user.passwordHash);
+          }
+          if (!match && !isDevDemo) {
+            return errorResponse(res, 'Invalid credentials', 401);
+          }
+        } else if (!isDevDemo) {
           return errorResponse(res, 'Invalid credentials', 401);
         }
       }

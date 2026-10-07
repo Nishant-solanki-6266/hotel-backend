@@ -60,7 +60,7 @@ export const pmsService = {
   /**
    * Connect and validate PMS provider for a specific hotel/tenant
    */
-  async connectPms(hotelId, { provider = 'mews', propertyId }) {
+  async connectPms(hotelId, { provider = 'mews', propertyId, clientToken } = {}) {
     if (!hotelId) {
       const err = new Error('Hotel ID is required for PMS connection');
       err.statusCode = 400;
@@ -84,7 +84,7 @@ export const pmsService = {
 
     // 1. Execute REAL Mews API validation via MewsClient
     const mewsClient = new MewsClient();
-    const enterpriseData = await mewsClient.validateEnterpriseAccess(cleanPropertyId);
+    const enterpriseData = await mewsClient.validateEnterpriseAccess(cleanPropertyId, { clientToken });
 
     // 2. Ensure Hotel record exists in database
     let hotelExists = await prisma.hotel.findUnique({ where: { id: hotelId } }).catch(() => null);
